@@ -19,6 +19,25 @@ const roleConfig = {
 
 let dynamicQrId = 6130;
 let toastTimer;
+let walletBalance = 1268.5;
+
+function formatMoney(amount) {
+  return `RM ${amount.toLocaleString("en-MY", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function parseAmount(value) {
+  const amount = Number(String(value).replace(/,/g, "").trim());
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function updateWalletBalance(change) {
+  walletBalance = Math.max(0, walletBalance + change);
+  const balance = document.querySelector("#wallet-balance");
+  if (balance) balance.textContent = formatMoney(walletBalance);
+}
 
 function showOnlyView(target) {
   Object.entries(views).forEach(([name, view]) => {
@@ -135,10 +154,15 @@ function handleUserButton(button) {
        <p class="dialog-note">原型中会模拟把金额加入交易记录。</p>`,
       "确认充值",
       () => {
-        const amount = document.querySelector("#recharge-amount").value || "100.00";
-        addTransaction("充值", "Google Pay", `+ RM ${amount}`);
+        const amount = parseAmount(document.querySelector("#recharge-amount").value);
+        if (!amount) {
+          showToast("请输入正确的充值金额");
+          return;
+        }
+        updateWalletBalance(amount);
+        addTransaction("充值", "Google Pay", `+ ${formatMoney(amount)}`);
         closeDialog();
-        showToast("充值成功，交易记录已更新");
+        showToast(`充值成功，余额已增加 ${formatMoney(amount)}`);
       }
     );
     return;
@@ -155,10 +179,19 @@ function handleUserButton(button) {
       "确认付款",
       () => {
         const merchant = document.querySelector("#pay-merchant").value || "商家";
-        const amount = document.querySelector("#pay-amount").value || "0.00";
-        addTransaction("扫码付款", merchant, `- RM ${amount}`);
+        const amount = parseAmount(document.querySelector("#pay-amount").value);
+        if (!amount) {
+          showToast("请输入正确的付款金额");
+          return;
+        }
+        if (amount > walletBalance) {
+          showToast("钱包余额不足");
+          return;
+        }
+        updateWalletBalance(-amount);
+        addTransaction("扫码付款", merchant, `- ${formatMoney(amount)}`);
         closeDialog();
-        showToast("付款成功");
+        showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
       }
     );
     return;
