@@ -19,7 +19,7 @@ const roleConfig = {
 
 let dynamicQrId = 6130;
 let toastTimer;
-let walletBalance = 1268.5;
+let walletBalance = readWalletBalance();
 
 function formatMoney(amount) {
   return `RM ${amount.toLocaleString("en-MY", {
@@ -33,9 +33,21 @@ function parseAmount(value) {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
+function getWalletBalanceElement() {
+  return document.querySelector("#wallet-balance") || document.querySelector(".balance-panel strong");
+}
+
+function readWalletBalance() {
+  const balance = getWalletBalanceElement();
+  if (!balance) return 1268.5;
+
+  const amount = Number(balance.textContent.replace(/[^\d.]/g, ""));
+  return Number.isFinite(amount) ? amount : 1268.5;
+}
+
 function updateWalletBalance(change) {
   walletBalance = Math.max(0, walletBalance + change);
-  const balance = document.querySelector("#wallet-balance");
+  const balance = getWalletBalanceElement();
   if (balance) balance.textContent = formatMoney(walletBalance);
 }
 
