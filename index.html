@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>1分钟支付</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section class="login-gateway" id="login-gateway">
+      <div class="gateway-header">
+        <div class="brand brand-light">
+          <div class="brand-mark">1</div>
+          <div>
+            <strong>1分钟支付</strong>
+            <span>请选择登录身份</span>
+          </div>
+        </div>
+        <p>用户、商家、管理员分别独立登录，进入后只显示对应界面。</p>
+      </div>
+
+      <div class="login-options">
+        <article class="login-choice">
+          <span>用户端</span>
+          <h1>用户 Google 登录</h1>
+          <p>登录后只看到钱包余额、扫码付款、收款码和交易记录。</p>
+          <button class="google-action auth-action" data-target="user">
+            <span class="google-mark">G</span>
+            使用 Google 登录
+          </button>
+        </article>
+        <article class="login-choice">
+          <span>商家端</span>
+          <h1>商家 Google 登录</h1>
+          <p>登录后只看到收款码、收款看板、订单、退款、结算、交易和通知。</p>
+          <button class="google-action auth-action" data-target="merchant">
+            <span class="google-mark">G</span>
+            使用 Google 登录
+          </button>
+        </article>
+        <article class="login-choice">
+          <span>后台端</span>
+          <h1>管理员 Google 登录</h1>
+          <p>登录后只看到后台管理、风控、财务、权限、日志和系统配置。</p>
+          <button class="google-action auth-action" data-target="admin">
+            <span class="google-mark">G</span>
+            使用 Google 登录
+          </button>
+        </article>
+      </div>
+    </section>
+
+    <div class="app-shell locked" id="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">1</div>
+          <div>
+            <strong>1分钟支付</strong>
+            <span id="current-role">未登录</span>
+          </div>
+        </div>
+        <div class="role-card">
+          <span>当前独立界面</span>
+          <strong id="role-name">-</strong>
+          <p>已通过 Google 身份进入</p>
+        </div>
+        <button class="logout-action" id="logout-button">退出登录</button>
+      </aside>
+
+      <main class="main">
+        <section class="topbar">
+          <div>
+            <p class="eyebrow">Wallet Payment Console</p>
+            <h1 id="page-title">用户界面</h1>
+          </div>
+          <div class="status-pill">系统运行正常</div>
+        </section>
+
+        <section class="view" id="user-view">
+          <div class="dashboard-grid">
+            <article class="balance-panel">
+              <div>
+                <span>钱包余额</span>
+                <strong>RM 1,268.50</strong>
+                <p>今日可用额度 RM 4,000.00</p>
+              </div>
+              <button class="primary-action">充值</button>
+            </article>
+            <article class="action-panel scan-panel">
+              <h2>扫码付款</h2>
+              <div class="scan-frame"><div class="scan-line"></div></div>
+              <button class="primary-action">打开扫码</button>
+            </article>
+            <article class="action-panel qr-panel">
+              <h2>收款码</h2>
+              <div class="qr-code" aria-label="模拟收款二维码"></div>
+              <p>ID: U-8294-6130</p>
+            </article>
+            <article class="table-panel full">
+              <div class="panel-header">
+                <h2>交易记录</h2>
+                <button class="ghost-action">筛选</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>时间</th><th>类型</th><th>对象</th><th>金额</th><th>状态</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>10:28</td><td>扫码付款</td><td>MY Coffee</td><td>- RM 12.80</td><td><span class="tag success">成功</span></td></tr>
+                  <tr><td>09:16</td><td>收款</td><td>Lee Wei</td><td>+ RM 88.00</td><td><span class="tag success">成功</span></td></tr>
+                  <tr><td>昨天</td><td>退款</td><td>Fresh Mart</td><td>+ RM 24.90</td><td><span class="tag warning">处理中</span></td></tr>
+                </tbody>
+              </table>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="merchant-view">
+          <div class="dashboard-grid">
+            <article class="action-panel qr-panel">
+              <h2>商家收款码</h2>
+              <div class="qr-code merchant-qr" aria-label="模拟商家收款二维码"></div>
+              <button class="primary-action">生成动态码</button>
+            </article>
+            <article class="metrics-panel wide">
+              <div class="panel-header"><h2>收款看板</h2><span>今日</span></div>
+              <div class="metric-row">
+                <div><span>收款金额</span><strong>RM 18,420</strong></div>
+                <div><span>订单数</span><strong>386</strong></div>
+                <div><span>退款</span><strong>RM 420</strong></div>
+                <div><span>待结算</span><strong>RM 12,900</strong></div>
+              </div>
+            </article>
+            <article class="table-panel full">
+              <div class="panel-header"><h2>订单管理</h2><button class="ghost-action">导出</button></div>
+              <table>
+                <thead>
+                  <tr><th>订单号</th><th>顾客</th><th>金额</th><th>支付方式</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>M20260603001</td><td>Chen</td><td>RM 68.20</td><td>QR Pay</td><td><span class="tag success">已支付</span></td><td><button class="text-action">查看</button></td></tr>
+                  <tr><td>M20260603002</td><td>Aisyah</td><td>RM 31.00</td><td>钱包余额</td><td><span class="tag warning">待退款</span></td><td><button class="text-action">处理</button></td></tr>
+                </tbody>
+              </table>
+            </article>
+            <article class="list-panel"><h2>退款处理</h2><ul><li><span>R-1028</span><strong>RM 31.00</strong><button>通过</button></li><li><span>R-1029</span><strong>RM 8.60</strong><button>审核</button></li></ul></article>
+            <article class="list-panel"><h2>结算管理</h2><ul><li><span>今日待结算</span><strong>RM 12,900</strong><button>申请</button></li><li><span>昨日已到账</span><strong>RM 16,780</strong><button>凭证</button></li></ul></article>
+            <article class="list-panel"><h2>交易记录</h2><ul><li><span>10:30 QR 收款</span><strong>+ RM 46.00</strong></li><li><span>10:22 退款</span><strong>- RM 12.00</strong></li><li><span>10:10 QR 收款</span><strong>+ RM 19.90</strong></li></ul></article>
+            <article class="list-panel"><h2>支付通知</h2><ul><li><span>订单 M001 支付成功</span><strong>刚刚</strong></li><li><span>退款 R1028 待审核</span><strong>5分钟前</strong></li><li><span>结算批次已生成</span><strong>20分钟前</strong></li></ul></article>
+          </div>
+        </section>
+
+        <section class="view" id="admin-view">
+          <div class="admin-layout">
+            <article class="metrics-panel">
+              <div class="metric-row compact">
+                <div><span>总交易额</span><strong>RM 2.86M</strong></div>
+                <div><span>活跃用户</span><strong>128,450</strong></div>
+                <div><span>商家数</span><strong>8,920</strong></div>
+                <div><span>风控预警</span><strong>37</strong></div>
+              </div>
+            </article>
+            <div class="module-grid">
+              <article class="module-card"><h2>用户管理</h2><p>账户、实名状态、余额、冻结与解冻。</p></article>
+              <article class="module-card"><h2>商家管理</h2><p>入驻审核、资质审核、门店与费率配置。</p></article>
+              <article class="module-card"><h2>交易管理</h2><p>支付、退款、转账、充值、提现流水。</p></article>
+              <article class="module-card"><h2>充值/提现管理</h2><p>渠道状态、异常单、人工复核。</p></article>
+              <article class="module-card"><h2>退款管理</h2><p>退款申请、审批、失败重试。</p></article>
+              <article class="module-card"><h2>结算管理</h2><p>商家结算批次、到账银行卡、凭证。</p></article>
+              <article class="module-card"><h2>财务报表</h2><p>手续费、平台收入、渠道成本、导出。</p></article>
+              <article class="module-card"><h2>风控中心</h2><p>异常交易、黑名单、限额规则。</p></article>
+              <article class="module-card"><h2>实名认证/KYC 审核</h2><p>证件、人脸、企业资质审核。</p></article>
+              <article class="module-card"><h2>权限管理</h2><p>管理员、角色、菜单权限、审批流。</p></article>
+              <article class="module-card"><h2>操作日志</h2><p>后台操作记录、登录记录、敏感动作。</p></article>
+              <article class="module-card"><h2>公告/活动/优惠券管理</h2><p>首页公告、营销活动、券发放规则。</p></article>
+              <article class="module-card"><h2>客服工单</h2><p>投诉、退款争议、账户问题追踪。</p></article>
+              <article class="module-card"><h2>系统配置</h2><p>支付渠道、手续费、额度、通知模板。</p></article>
+            </div>
+            <article class="table-panel">
+              <div class="panel-header"><h2>后台交易监控</h2><button class="ghost-action">查看全部</button></div>
+              <table>
+                <thead>
+                  <tr><th>流水号</th><th>用户/商家</th><th>类型</th><th>金额</th><th>风险</th><th>状态</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>T202606030881</td><td>MY Coffee</td><td>QR收款</td><td>RM 880.00</td><td><span class="tag success">低</span></td><td><span class="tag success">成功</span></td></tr>
+                  <tr><td>T202606030882</td><td>U-8294</td><td>提现</td><td>RM 4,500.00</td><td><span class="tag danger">高</span></td><td><span class="tag warning">复核中</span></td></tr>
+                </tbody>
+              </table>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="script.js"></script>
+  </body>
+</html>
