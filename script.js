@@ -52,6 +52,8 @@ const roleConfig = {
 let activeRole = sessionStorage.getItem("activeRole") || "";
 let currentUser = null;
 let walletUnsubscribe = null;
+let scannerStream = null;
+let scannerTimer = null;
 let dynamicQrId = 6130;
 let toastTimer;
 let walletBalance = readWalletBalance();
@@ -66,6 +68,30 @@ function formatMoney(amount) {
 function parseAmount(value) {
   const amount = Number(String(value).replace(/,/g, "").trim());
   return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function parsePaymentCode(rawCode) {
+  const raw = String(rawCode || "").trim();
+  if (!raw) return null;
+
+  try {
+    const url = raw.includes("://") ? new URL(raw) : new URL(`https://pay.local/?${raw}`);
+    const merchant = url.searchParams.get("merchant") || url.searchParams.get("m") || url.hostname;
+    const amount = parseAmount(url.searchParams.get("amount") || url.searchParams.get("a"));
+    if (merchant && amount) return { merchant, amount, code: raw };
+  } catch (error) {
+    const parts = Object.fromEntries(
+      raw.split(/[|&;]/).map((part) => {
+        const [key, value = ""] = part.split("=");
+        return [key.trim().toLowerCase(), decodeURIComponent(value.trim())];
+      })
+    );
+    const merchant = parts.merchant || parts.m || parts.shop;
+    const amount = parseAmount(parts.amount || parts.a);
+    if (merchant && amount) return { merchant, amount, code: raw };
+  }
+
+  return null;
 }
 
 function getWalletBalanceElement() {
@@ -217,6 +243,7 @@ function openDialog(title, body, confirmText = "确认", onConfirm = closeDialog
 }
 
 function closeDialog() {
+  stopScanner();
   const overlay = document.querySelector("#action-overlay");
   if (overlay) overlay.classList.add("hidden");
 }
@@ -252,6 +279,94 @@ function addTransaction(type, target, amount, status = "成功") {
   tbody.prepend(row);
 }
 
+function fillPaymentForm(payment) {
+  const merchantInput = document.querySelector("#pay-merchant");
+  const amountInput = document.querySelector("#pay-amount");
+  const codeInput = document.querySelector("#pay-code");
+  const result = document.querySelector("#scan-result");
+
+  if (merchantInput) merchantInput.value = payment.merchant;
+  if (amountInput) amountInput.value = payment.amount.toFixed(2);
+  if (codeInput) codeInput.value = payment.code || "";
+  if (result) result.textContent = `已识别：${payment.merchant}，${formatMoney(payment.amount)}`;
+}
+
+async function startScanner() {
+  const video = document.querySelector("#scanner-video");
+  const result = document.querySelector("#scan-result");
+  const startButton = document.querySelector("#start-scanner");
+  if (!video) return;
+
+  if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) {
+    if (result) result.textContent = "当前浏览器不支持摄像头扫码，请使用手动付款码。";
+    return;
+  }
+
+  try {
+    scannerStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+    video.srcObject = scannerStream;
+    await video.play();
+    if (startButton) startButton.textContent = "扫码中";
+    if (result) result.textContent = "请把商家二维码放入取景框";
+
+    if ("BarcodeDetector" in window) {
+      const detector = new BarcodeDetector({ formats: ["qr_code"] });
+      scannerTimer = window.setInterval(async () => {
+        if (!video.videoWidth) return;
+        const codes = await detector.detect(video);
+        const payment = parsePaymentCode(codes[0]?.rawValue);
+        if (payment) {
+          fillPaymentForm(payment);
+          stopScanner();
+          showToast("已识别付款二维码");
+        }
+      }, 800);
+    } else if (result) {
+      result.textContent = "摄像头已打开，但此浏览器不支持原生 QR 识别，请手动输入付款码。";
+    }
+  } catch (error) {
+    if (result) result.textContent = "无法打开摄像头，请检查浏览器权限，或使用手动付款码。";
+  }
+}
+
+function stopScanner() {
+  if (scannerTimer) window.clearInterval(scannerTimer);
+  scannerTimer = null;
+  if (scannerStream) {
+    scannerStream.getTracks().forEach((track) => track.stop());
+  }
+  scannerStream = null;
+  const video = document.querySelector("#scanner-video");
+  if (video) video.srcObject = null;
+  const startButton = document.querySelector("#start-scanner");
+  if (startButton) startButton.textContent = "打开摄像头扫码";
+}
+
+async function confirmScanPayment() {
+  const codeInput = document.querySelector("#pay-code");
+  const manualPayment = parsePaymentCode(codeInput?.value);
+  if (manualPayment) fillPaymentForm(manualPayment);
+
+  const merchant = document.querySelector("#pay-merchant").value || "商家";
+  const amount = parseAmount(document.querySelector("#pay-amount").value);
+  if (!amount) {
+    showToast("请输入正确的付款金额");
+    return;
+  }
+  if (amount > walletBalance) {
+    showToast("钱包余额不足");
+    return;
+  }
+
+  await updateWalletBalance(-amount);
+  addTransaction("扫码付款", merchant, `- ${formatMoney(amount)}`);
+  closeDialog();
+  showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
+}
+
 function handleUserButton(button) {
   const text = button.textContent.trim();
   if (text.includes("充值")) {
@@ -279,29 +394,33 @@ function handleUserButton(button) {
   if (text.includes("扫码")) {
     openDialog(
       "扫码付款",
-      `<div class="sim-scan"><div class="scan-frame"><div class="scan-line"></div></div></div>
+      `<div class="scanner-box">
+        <video id="scanner-video" class="scanner-video" playsinline muted></video>
+        <div class="scanner-frame"><div class="scan-line"></div></div>
+      </div>
+      <div class="scanner-actions">
+        <button class="text-action" id="start-scanner" type="button">打开摄像头扫码</button>
+        <button class="text-action" id="use-demo-code" type="button">使用测试码</button>
+      </div>
+      <p class="dialog-note" id="scan-result">支持付款码格式：oneminpay://pay?merchant=MY%20Coffee&amount=12.80</p>
+       <label class="field-label">付款码内容</label>
+       <input class="dialog-input" id="pay-code" placeholder="粘贴或输入商家付款码" />
        <label class="field-label">商家</label>
        <input class="dialog-input" id="pay-merchant" value="MY Coffee" />
        <label class="field-label">付款金额</label>
        <input class="dialog-input" id="pay-amount" value="12.80" />`,
       "确认付款",
-      async () => {
-        const merchant = document.querySelector("#pay-merchant").value || "商家";
-        const amount = parseAmount(document.querySelector("#pay-amount").value);
-        if (!amount) {
-          showToast("请输入正确的付款金额");
-          return;
-        }
-        if (amount > walletBalance) {
-          showToast("钱包余额不足");
-          return;
-        }
-        await updateWalletBalance(-amount);
-        addTransaction("扫码付款", merchant, `- ${formatMoney(amount)}`);
-        closeDialog();
-        showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
-      }
+      confirmScanPayment
     );
+    document.querySelector("#start-scanner").addEventListener("click", startScanner);
+    document.querySelector("#use-demo-code").addEventListener("click", () => {
+      fillPaymentForm({
+        merchant: "MY Coffee",
+        amount: 12.8,
+        code: "oneminpay://pay?merchant=MY%20Coffee&amount=12.80",
+      });
+      showToast("已填入测试付款码");
+    });
     return;
   }
 
