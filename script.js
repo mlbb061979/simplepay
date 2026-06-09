@@ -1,3 +1,35 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import {
+  doc,
+  getDoc,
+  getFirestore,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCaPryZlkhPvzFC0OngXmA-hhXDsDx814U",
+  authDomain: "oneminpay.firebaseapp.com",
+  projectId: "oneminpay",
+  storageBucket: "oneminpay.firebasestorage.app",
+  messagingSenderId: "994992460655",
+  appId: "1:994992460655:web:af50421b498ffec3dace9a",
+  measurementId: "G-WD4LTPN670",
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const googleProvider = new GoogleAuthProvider();
+
 const loginGateway = document.querySelector("#login-gateway");
 const appShell = document.querySelector("#app-shell");
 const pageTitle = document.querySelector("#page-title");
@@ -17,6 +49,9 @@ const roleConfig = {
   admin: { title: "后台界面", label: "管理员 Google 账号" },
 };
 
+let activeRole = sessionStorage.getItem("activeRole") || "";
+let currentUser = null;
+let walletUnsubscribe = null;
 let dynamicQrId = 6130;
 let toastTimer;
 let walletBalance = readWalletBalance();
@@ -40,15 +75,58 @@ function getWalletBalanceElement() {
 function readWalletBalance() {
   const balance = getWalletBalanceElement();
   if (!balance) return 1268.5;
-
   const amount = Number(balance.textContent.replace(/[^\d.]/g, ""));
   return Number.isFinite(amount) ? amount : 1268.5;
 }
 
-function updateWalletBalance(change) {
-  walletBalance = Math.max(0, walletBalance + change);
+function setWalletBalance(amount) {
+  walletBalance = Math.max(0, amount);
   const balance = getWalletBalanceElement();
   if (balance) balance.textContent = formatMoney(walletBalance);
+}
+
+function getWalletRef(user = currentUser) {
+  return doc(db, "wallets", user.uid);
+}
+
+async function attachWallet(user) {
+  if (walletUnsubscribe) walletUnsubscribe();
+  const walletRef = getWalletRef(user);
+  const walletDoc = await getDoc(walletRef);
+
+  if (!walletDoc.exists()) {
+    await setDoc(walletRef, {
+      balance: walletBalance,
+      email: user.email,
+      role: "user",
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  walletUnsubscribe = onSnapshot(walletRef, (snapshot) => {
+    const data = snapshot.data();
+    if (data && typeof data.balance === "number") {
+      setWalletBalance(data.balance);
+    }
+  });
+}
+
+async function updateWalletBalance(change) {
+  const nextBalance = Math.max(0, walletBalance + change);
+  setWalletBalance(nextBalance);
+
+  if (currentUser && activeRole === "user") {
+    await setDoc(
+      getWalletRef(),
+      {
+        balance: nextBalance,
+        email: currentUser.email,
+        role: "user",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
 }
 
 function showOnlyView(target) {
@@ -57,18 +135,38 @@ function showOnlyView(target) {
   });
 }
 
-function loginAs(target) {
+async function loginAs(target) {
+  activeRole = target;
+  sessionStorage.setItem("activeRole", target);
+
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    currentUser = result.user;
+    enterRole(target);
+    if (target === "user") await attachWallet(currentUser);
+    showToast(`${roleConfig[target].title}登录成功`);
+  } catch (error) {
+    showToast(`Google 登录失败：${error.message}`);
+  }
+}
+
+function enterRole(target) {
   const role = roleConfig[target];
   showOnlyView(target);
   pageTitle.textContent = role.title;
-  currentRole.textContent = role.label;
+  currentRole.textContent = currentUser?.email || role.label;
   roleName.textContent = role.title;
   loginGateway.classList.add("hidden");
   appShell.classList.remove("locked");
-  showToast(`${role.title}登录成功`);
 }
 
-function logout() {
+async function logout() {
+  if (walletUnsubscribe) walletUnsubscribe();
+  walletUnsubscribe = null;
+  activeRole = "";
+  currentUser = null;
+  sessionStorage.removeItem("activeRole");
+  await signOut(auth);
   showOnlyView("");
   appShell.classList.add("locked");
   loginGateway.classList.remove("hidden");
@@ -114,9 +212,7 @@ function openDialog(title, body, confirmText = "确认", onConfirm = closeDialog
   overlay.querySelector("#dialog-body").innerHTML = body;
   const confirm = overlay.querySelector(".dialog-confirm");
   confirm.textContent = confirmText;
-  confirm.onclick = () => {
-    onConfirm();
-  };
+  confirm.onclick = () => onConfirm();
   overlay.classList.remove("hidden");
 }
 
@@ -137,7 +233,7 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
 function addTransaction(type, target, amount, status = "成功") {
@@ -158,20 +254,20 @@ function addTransaction(type, target, amount, status = "成功") {
 
 function handleUserButton(button) {
   const text = button.textContent.trim();
-  if (text.includes("充值") || text.includes("鍏")) {
+  if (text.includes("充值")) {
     openDialog(
       "钱包充值",
       `<label class="field-label">充值金额</label>
        <input class="dialog-input" id="recharge-amount" value="100.00" />
-       <p class="dialog-note">原型中会模拟把金额加入交易记录。</p>`,
+       <p class="dialog-note">充值后会写入 Firebase，同一个 Google 账号在电脑和手机会同步余额。</p>`,
       "确认充值",
-      () => {
+      async () => {
         const amount = parseAmount(document.querySelector("#recharge-amount").value);
         if (!amount) {
           showToast("请输入正确的充值金额");
           return;
         }
-        updateWalletBalance(amount);
+        await updateWalletBalance(amount);
         addTransaction("充值", "Google Pay", `+ ${formatMoney(amount)}`);
         closeDialog();
         showToast(`充值成功，余额已增加 ${formatMoney(amount)}`);
@@ -180,7 +276,7 @@ function handleUserButton(button) {
     return;
   }
 
-  if (text.includes("扫码") || text.includes("鎵")) {
+  if (text.includes("扫码")) {
     openDialog(
       "扫码付款",
       `<div class="sim-scan"><div class="scan-frame"><div class="scan-line"></div></div></div>
@@ -189,7 +285,7 @@ function handleUserButton(button) {
        <label class="field-label">付款金额</label>
        <input class="dialog-input" id="pay-amount" value="12.80" />`,
       "确认付款",
-      () => {
+      async () => {
         const merchant = document.querySelector("#pay-merchant").value || "商家";
         const amount = parseAmount(document.querySelector("#pay-amount").value);
         if (!amount) {
@@ -200,7 +296,7 @@ function handleUserButton(button) {
           showToast("钱包余额不足");
           return;
         }
-        updateWalletBalance(-amount);
+        await updateWalletBalance(-amount);
         addTransaction("扫码付款", merchant, `- ${formatMoney(amount)}`);
         closeDialog();
         showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
@@ -209,7 +305,7 @@ function handleUserButton(button) {
     return;
   }
 
-  if (text.includes("筛选") || text.includes("绛")) {
+  if (text.includes("筛选")) {
     openDialog(
       "筛选交易记录",
       `<div class="filter-grid">
@@ -230,7 +326,7 @@ function handleUserButton(button) {
 
 function handleMerchantButton(button) {
   const text = button.textContent.trim();
-  if (text.includes("动态") || text.includes("鐢熸垚")) {
+  if (text.includes("动态")) {
     dynamicQrId += 1;
     const panel = button.closest(".qr-panel");
     const idLine = panel.querySelector("p") || document.createElement("p");
@@ -240,7 +336,7 @@ function handleMerchantButton(button) {
     return;
   }
 
-  if (text.includes("导出") || text.includes("瀵")) {
+  if (text.includes("导出")) {
     openDialog(
       "导出订单",
       `<p class="dialog-note">将导出今日订单、退款和结算状态。</p>
@@ -254,7 +350,7 @@ function handleMerchantButton(button) {
     return;
   }
 
-  if (text.includes("查看") || text.includes("鏌")) {
+  if (text.includes("查看")) {
     openDialog(
       "订单详情",
       `<div class="detail-list">
@@ -269,7 +365,7 @@ function handleMerchantButton(button) {
     return;
   }
 
-  if (text.includes("处理") || text.includes("澶")) {
+  if (text.includes("处理")) {
     openDialog(
       "处理退款订单",
       `<p class="dialog-note">订单 M20260603002 申请退款 RM 31.00。</p>`,
@@ -284,14 +380,14 @@ function handleMerchantButton(button) {
     return;
   }
 
-  if (text.includes("通过") || text.includes("审核") || text.includes("閫") || text.includes("瀹")) {
+  if (text.includes("通过") || text.includes("审核")) {
     button.textContent = "已完成";
     button.disabled = true;
     showToast("退款审核已完成");
     return;
   }
 
-  if (text.includes("申请") || text.includes("凭证") || text.includes("鐢") || text.includes("鍑")) {
+  if (text.includes("申请") || text.includes("凭证")) {
     openDialog(
       "结算管理",
       `<p class="dialog-note">今日待结算金额 RM 12,900，将提交到绑定银行卡。</p>`,
@@ -306,7 +402,7 @@ function handleMerchantButton(button) {
 
 function handleAdminButton(button) {
   const text = button.textContent.trim();
-  if (text.includes("查看") || text.includes("鏌")) {
+  if (text.includes("查看")) {
     openDialog(
       "后台交易监控",
       `<div class="detail-list">
@@ -349,4 +445,11 @@ document.querySelectorAll(".module-card").forEach((card) => {
       showToast(`${title}已打开`);
     });
   });
+});
+
+onAuthStateChanged(auth, async (user) => {
+  currentUser = user;
+  if (!user || !activeRole) return;
+  enterRole(activeRole);
+  if (activeRole === "user") await attachWallet(user);
 });
