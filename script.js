@@ -7,8 +7,10 @@ import {
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
+  collection,
   doc,
   getDoc,
+  getDocs,
   getFirestore,
   onSnapshot,
   runTransaction,
@@ -60,7 +62,9 @@ let scannerTimer = null;
 let dynamicQrId = 6130;
 let toastTimer;
 let walletBalance = 0;
+let walletStatus = "active";
 let userTransactions = [];
+let adminUsersCache = [];
 
 function formatMoney(amount) {
   return `RM ${Number(amount || 0).toLocaleString("en-MY", {
@@ -232,6 +236,61 @@ function renderUserTransactions(transactions = []) {
     .join("");
 }
 
+function statusTag(status) {
+  return status === "frozen"
+    ? '<span class="tag danger">已冻结</span>'
+    : '<span class="tag success">正常</span>';
+}
+
+function renderAdminUsers(users = []) {
+  const body = document.querySelector("#admin-users-body");
+  if (!body) return;
+  if (!users.length) {
+    body.innerHTML = '<tr><td colspan="5">暂无用户钱包数据</td></tr>';
+    return;
+  }
+
+  body.innerHTML = users
+    .map(
+      (user) => `
+        <tr>
+          <td>${user.email || user.displayName || user.id}</td>
+          <td>${formatMoney(user.balance || 0)}</td>
+          <td>${(user.transactions || []).length}</td>
+          <td>${statusTag(user.status)}</td>
+          <td>
+            <button class="text-action admin-user-action" data-action="view" data-user-id="${user.id}">查看</button>
+            <button class="text-action admin-user-action" data-action="${user.status === "frozen" ? "unfreeze" : "freeze"}" data-user-id="${user.id}">
+              ${user.status === "frozen" ? "解冻" : "冻结"}
+            </button>
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadAdminUsers() {
+  const body = document.querySelector("#admin-users-body");
+  if (body) body.innerHTML = '<tr><td colspan="5">正在加载用户数据...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "wallets"));
+  adminUsersCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  renderAdminUsers(adminUsersCache);
+}
+
+async function setUserFrozen(userId, frozen) {
+  await setDoc(
+    doc(db, "wallets", userId),
+    {
+      status: frozen ? "frozen" : "active",
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await loadAdminUsers();
+}
+
 function transactionItem(type, target, amount) {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -258,6 +317,7 @@ async function ensureWallet(user) {
       receiveCode,
       role: "user",
       transactions: [],
+      status: "active",
       updatedAt: serverTimestamp(),
     });
     return;
@@ -276,6 +336,7 @@ async function attachWallet(user) {
   walletUnsubscribe = onSnapshot(walletRef(user), (snapshot) => {
     const data = snapshot.data() || {};
     setWalletBalance(data.balance || 0);
+    walletStatus = data.status || "active";
     userTransactions = Array.isArray(data.transactions) ? data.transactions : [];
     renderUserTransactions(userTransactions);
     updateReceiveQr(data.receiveCode || createReceiveCode(user));
@@ -385,6 +446,7 @@ function enterRole(target) {
   roleName.textContent = role.title;
   loginGateway.classList.add("hidden");
   appShell.classList.remove("locked");
+  if (target === "admin") loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
 }
 
 async function logout() {
@@ -635,6 +697,10 @@ function handleUserButton(button) {
   }
 
   if (text.includes("充值")) {
+    if (walletStatus === "frozen") {
+      showToast("账户已被冻结，无法充值");
+      return;
+    }
     openDialog(
       "钱包充值",
       `<label class="field-label">充值金额</label>
@@ -656,6 +722,10 @@ function handleUserButton(button) {
   }
 
   if (text.includes("扫码")) {
+    if (walletStatus === "frozen") {
+      showToast("账户已被冻结，无法付款");
+      return;
+    }
     openDialog(
       "扫码付款",
       `<div class="scanner-box">
@@ -786,6 +856,39 @@ function handleMerchantButton(button) {
 
 function handleAdminButton(button) {
   const text = button.textContent.trim();
+  if (button.id === "refresh-users-button") {
+    loadAdminUsers()
+      .then(() => showToast("用户列表已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.classList.contains("admin-user-action")) {
+    const userId = button.dataset.userId;
+    const action = button.dataset.action;
+    const user = adminUsersCache.find((item) => item.id === userId);
+    if (action === "view") {
+      openDialog(
+        "用户详情",
+        `<div class="detail-list">
+          <p><strong>邮箱：</strong>${user?.email || "-"}</p>
+          <p><strong>UID：</strong>${userId}</p>
+          <p><strong>余额：</strong>${formatMoney(user?.balance || 0)}</p>
+          <p><strong>状态：</strong>${user?.status === "frozen" ? "已冻结" : "正常"}</p>
+          <p><strong>交易数：</strong>${(user?.transactions || []).length}</p>
+        </div>`,
+        "关闭",
+        closeDialog
+      );
+      return;
+    }
+
+    setUserFrozen(userId, action === "freeze")
+      .then(() => showToast(action === "freeze" ? "用户已冻结" : "用户已解冻"))
+      .catch((error) => showToast(error.message || "操作失败"));
+    return;
+  }
+
   if (button.id === "authorize-admin-button") {
     const input = document.querySelector("#admin-email-input");
     authorizeAdminEmail(input?.value)

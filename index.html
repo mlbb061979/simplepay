@@ -185,6 +185,20 @@
               <article class="module-card"><h2>客服工单</h2><p>投诉、退款争议、账户问题追踪。</p></article>
               <article class="module-card"><h2>系统配置</h2><p>支付渠道、手续费、额度、通知模板。</p></article>
             </div>
+            <article class="table-panel" id="admin-user-management">
+              <div class="panel-header">
+                <h2>用户管理</h2>
+                <button class="ghost-action" id="refresh-users-button" type="button">刷新用户</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>用户</th><th>余额</th><th>交易数</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-users-body">
+                  <tr><td colspan="5">进入后台后加载用户数据</td></tr>
+                </tbody>
+              </table>
+            </article>
             <article class="table-panel">
               <div class="panel-header"><h2>后台交易监控</h2><button class="ghost-action">查看全部</button></div>
               <table>
