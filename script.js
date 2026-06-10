@@ -94,6 +94,22 @@ function parsePaymentCode(rawCode) {
   return null;
 }
 
+function createReceiveCode(user = currentUser) {
+  if (!user) return "";
+  const name = encodeURIComponent(user.displayName || user.email || "User");
+  return `oneminpay://receive?userId=${encodeURIComponent(user.uid)}&name=${name}`;
+}
+
+function updateReceiveQr(receiveCode) {
+  const qrImage = document.querySelector("#receive-qr-image");
+  const label = document.querySelector("#receive-code-label");
+  if (!receiveCode || !qrImage || !label) return;
+
+  qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=10&data=${encodeURIComponent(receiveCode)}`;
+  qrImage.dataset.code = receiveCode;
+  label.textContent = `固定收款ID: ${receiveCode.slice(receiveCode.indexOf("userId=") + 7, receiveCode.indexOf("&name=")).slice(0, 10)}...`;
+}
+
 function getWalletBalanceElement() {
   return document.querySelector("#wallet-balance") || document.querySelector(".balance-panel strong");
 }
@@ -121,12 +137,22 @@ async function attachWallet(user) {
   const walletDoc = await getDoc(walletRef);
 
   if (!walletDoc.exists()) {
+    const receiveCode = createReceiveCode(user);
     await setDoc(walletRef, {
       balance: walletBalance,
       email: user.email,
+      receiveCode,
       role: "user",
       updatedAt: serverTimestamp(),
     });
+    updateReceiveQr(receiveCode);
+  } else {
+    const data = walletDoc.data();
+    const receiveCode = data.receiveCode || createReceiveCode(user);
+    updateReceiveQr(receiveCode);
+    if (!data.receiveCode) {
+      await setDoc(walletRef, { receiveCode, updatedAt: serverTimestamp() }, { merge: true });
+    }
   }
 
   walletUnsubscribe = onSnapshot(walletRef, (snapshot) => {
@@ -134,6 +160,7 @@ async function attachWallet(user) {
     if (data && typeof data.balance === "number") {
       setWalletBalance(data.balance);
     }
+    if (data?.receiveCode) updateReceiveQr(data.receiveCode);
   });
 }
 
@@ -404,6 +431,17 @@ async function confirmScanPayment() {
 
 function handleUserButton(button) {
   const text = button.textContent.trim();
+  if (button.id === "copy-receive-code") {
+    const code = document.querySelector("#receive-qr-image")?.dataset.code;
+    if (!code) {
+      showToast("收款码还未生成，请先完成登录");
+      return;
+    }
+    navigator.clipboard?.writeText(code);
+    showToast("专属收款码已复制");
+    return;
+  }
+
   if (text.includes("充值")) {
     openDialog(
       "钱包充值",
