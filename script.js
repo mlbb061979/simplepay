@@ -65,6 +65,7 @@ let walletBalance = 0;
 let walletStatus = "active";
 let userTransactions = [];
 let adminUsersCache = [];
+let rechargeRequestsCache = [];
 
 function formatMoney(amount) {
   return `RM ${Number(amount || 0).toLocaleString("en-MY", {
@@ -237,6 +238,9 @@ function renderUserTransactions(transactions = []) {
 }
 
 function statusTag(status) {
+  if (status === "pending") return '<span class="tag warning">待审批</span>';
+  if (status === "approved") return '<span class="tag success">已通过</span>';
+  if (status === "rejected") return '<span class="tag danger">已拒绝</span>';
   return status === "frozen"
     ? '<span class="tag danger">已冻结</span>'
     : '<span class="tag success">正常</span>';
@@ -277,6 +281,111 @@ async function loadAdminUsers() {
   const snapshot = await getDocs(collection(db, "wallets"));
   adminUsersCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
   renderAdminUsers(adminUsersCache);
+}
+
+function renderRechargeRequests(requests = []) {
+  const body = document.querySelector("#admin-recharges-body");
+  if (!body) return;
+  if (!requests.length) {
+    body.innerHTML = '<tr><td colspan="5">暂无充值申请</td></tr>';
+    return;
+  }
+
+  body.innerHTML = requests
+    .map(
+      (request) => `
+        <tr>
+          <td>${request.email || request.userId}</td>
+          <td>${formatMoney(request.amount || 0)}</td>
+          <td>${request.time || "-"}</td>
+          <td>${statusTag(request.status || "pending")}</td>
+          <td>
+            ${
+              request.status === "pending"
+                ? `<button class="text-action recharge-action" data-action="approve" data-request-id="${request.id}">通过</button>
+                   <button class="text-action recharge-action" data-action="reject" data-request-id="${request.id}">拒绝</button>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadRechargeRequests() {
+  const body = document.querySelector("#admin-recharges-body");
+  if (body) body.innerHTML = '<tr><td colspan="5">正在加载充值申请...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "rechargeRequests"));
+  rechargeRequestsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderRechargeRequests(rechargeRequestsCache);
+}
+
+async function submitRechargeRequest(amount) {
+  if (walletStatus === "frozen") throw new Error("账户已被冻结，无法提交充值申请");
+  const requestId = `${currentUser.uid}-${Date.now()}`;
+  await setDoc(doc(db, "rechargeRequests", requestId), {
+    userId: currentUser.uid,
+    email: currentUser.email,
+    displayName: currentUser.displayName || "",
+    amount,
+    status: "pending",
+    time: "刚刚",
+    createdAt: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+async function reviewRechargeRequest(requestId, approved) {
+  const request = rechargeRequestsCache.find((item) => item.id === requestId);
+  if (!request) throw new Error("找不到充值申请");
+  if (request.status !== "pending") throw new Error("该申请已处理");
+
+  await runTransaction(db, async (transaction) => {
+    const requestRef = doc(db, "rechargeRequests", requestId);
+    const userRef = doc(db, "wallets", request.userId);
+    const requestSnap = await transaction.get(requestRef);
+    const userSnap = await transaction.get(userRef);
+    if (!requestSnap.exists()) throw new Error("充值申请不存在");
+    if (!userSnap.exists()) throw new Error("用户钱包不存在");
+
+    const latestRequest = requestSnap.data();
+    if (latestRequest.status !== "pending") throw new Error("该申请已处理");
+
+    const userData = userSnap.data() || {};
+    const tx = transactionItem(
+      approved ? "充值" : "充值拒绝",
+      "后台审批",
+      approved ? `+ ${formatMoney(latestRequest.amount)}` : formatMoney(latestRequest.amount)
+    );
+
+    transaction.set(
+      requestRef,
+      {
+        status: approved ? "approved" : "rejected",
+        reviewedBy: currentUser.email,
+        reviewedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (approved) {
+      transaction.set(
+        userRef,
+        {
+          balance: Number(userData.balance || 0) + Number(latestRequest.amount || 0),
+          transactions: [tx, ...(userData.transactions || [])].slice(0, 30),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  });
+
+  await Promise.all([loadRechargeRequests(), loadAdminUsers()]);
 }
 
 async function setUserFrozen(userId, frozen) {
@@ -447,6 +556,7 @@ function enterRole(target) {
   loginGateway.classList.add("hidden");
   appShell.classList.remove("locked");
   if (target === "admin") loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
+  if (target === "admin") loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
 }
 
 async function logout() {
@@ -705,17 +815,17 @@ function handleUserButton(button) {
       "钱包充值",
       `<label class="field-label">充值金额</label>
        <input class="dialog-input" id="recharge-amount" value="100.00" />
-       <p class="dialog-note">充值后会写入 Firebase，仅当前 Google 账号的钱包余额会增加。</p>`,
-      "确认充值",
+       <p class="dialog-note">充值会先提交给后台审批，审批通过后余额才会增加。</p>`,
+      "提交申请",
       async () => {
         const amount = parseAmount(document.querySelector("#recharge-amount").value);
         if (!amount) {
           showToast("请输入正确的充值金额");
           return;
         }
-        await updateWalletBalance(amount, transactionItem("充值", "Google Pay", `+ ${formatMoney(amount)}`));
+        await submitRechargeRequest(amount);
         closeDialog();
-        showToast(`充值成功，余额已增加 ${formatMoney(amount)}`);
+        showToast(`充值申请已提交：${formatMoney(amount)}`);
       }
     );
     return;
@@ -860,6 +970,21 @@ function handleAdminButton(button) {
     loadAdminUsers()
       .then(() => showToast("用户列表已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "refresh-recharges-button") {
+    loadRechargeRequests()
+      .then(() => showToast("充值申请已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.classList.contains("recharge-action")) {
+    const approved = button.dataset.action === "approve";
+    reviewRechargeRequest(button.dataset.requestId, approved)
+      .then(() => showToast(approved ? "充值申请已通过" : "充值申请已拒绝"))
+      .catch((error) => showToast(error.message || "审批失败"));
     return;
   }
 
