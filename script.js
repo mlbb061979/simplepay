@@ -50,7 +50,7 @@ const roleConfig = {
   merchant: { title: "商家界面", label: "商家 Google 账号" },
   admin: { title: "后台界面", label: "管理员 Google 账号" },
 };
-const OWNER_ADMIN_EMAIL = "REPLACE_WITH_OWNER_GOOGLE_EMAIL";
+const OWNER_ADMIN_EMAIL = "stanleyhoh79@gmail.com";
 
 let activeRole = sessionStorage.getItem("activeRole") || "";
 let currentUser = null;
