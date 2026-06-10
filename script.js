@@ -549,6 +549,7 @@ document.addEventListener("click", (event) => {
 
   const activeView = document.querySelector(".view.active");
   if (!activeView) return;
+  if (button.closest("#action-overlay") || !activeView.contains(button)) return;
 
   if (activeView.id === "user-view") handleUserButton(button);
   if (activeView.id === "merchant-view") handleMerchantButton(button);
