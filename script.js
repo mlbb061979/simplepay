@@ -297,19 +297,43 @@ async function startScanner() {
   const startButton = document.querySelector("#start-scanner");
   if (!video) return;
 
+  if (!window.isSecureContext) {
+    if (result) result.textContent = "手机摄像头需要 HTTPS 页面，请使用 GitHub Pages 的 https:// 地址打开。";
+    return;
+  }
+
   if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) {
     if (result) result.textContent = "当前浏览器不支持摄像头扫码，请使用手动付款码。";
     return;
   }
 
   try {
-    scannerStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
-      audio: false,
-    });
+    if (startButton) {
+      startButton.disabled = true;
+      startButton.textContent = "正在请求摄像头";
+    }
+
+    try {
+      scannerStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+    } catch (error) {
+      scannerStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+    }
+
+    video.setAttribute("autoplay", "");
+    video.setAttribute("muted", "");
+    video.setAttribute("playsinline", "");
     video.srcObject = scannerStream;
     await video.play();
-    if (startButton) startButton.textContent = "扫码中";
+    if (startButton) {
+      startButton.disabled = false;
+      startButton.textContent = "扫码中";
+    }
     if (result) result.textContent = "请把商家二维码放入取景框";
 
     if ("BarcodeDetector" in window) {
@@ -328,7 +352,18 @@ async function startScanner() {
       result.textContent = "摄像头已打开，但此浏览器不支持原生 QR 识别，请手动输入付款码。";
     }
   } catch (error) {
-    if (result) result.textContent = "无法打开摄像头，请检查浏览器权限，或使用手动付款码。";
+    if (startButton) {
+      startButton.disabled = false;
+      startButton.textContent = "打开摄像头扫码";
+    }
+    const reasonMap = {
+      NotAllowedError: "摄像头权限被拒绝，请在浏览器网站设置里允许摄像头。",
+      NotFoundError: "没有找到可用摄像头。",
+      NotReadableError: "摄像头被其他应用占用，请关闭相机、微信、WhatsApp 等应用后重试。",
+      OverconstrainedError: "当前摄像头不支持请求的模式。",
+      SecurityError: "浏览器安全限制阻止摄像头，请确认使用 HTTPS。",
+    };
+    if (result) result.textContent = reasonMap[error.name] || `无法打开摄像头：${error.name || error.message}`;
   }
 }
 
