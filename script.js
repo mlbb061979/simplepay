@@ -69,7 +69,15 @@ function formatMoney(amount) {
 }
 
 function parseAmount(value) {
-  const amount = Number(String(value || "").replace(/,/g, "").trim());
+  const normalized = String(value || "")
+    .replace(/[０-９．，]/g, (char) => {
+      if (char === "．") return ".";
+      if (char === "，") return ",";
+      return String.fromCharCode(char.charCodeAt(0) - 0xfee0);
+    })
+    .replace(/[^\d.]/g, "")
+    .trim();
+  const amount = Number(normalized);
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
@@ -510,23 +518,30 @@ function stopScanner() {
 async function confirmScanPayment() {
   const codeInput = document.querySelector("#pay-code");
   const amountInput = document.querySelector("#pay-amount");
+  const amountBeforeParse = amountInput?.value || "";
   const manualPayment = parsePaymentCode(codeInput?.value);
   if (manualPayment) {
     if (manualPayment.kind === "receive") {
-      const existingAmount = parseAmount(amountInput?.value);
-      fillPaymentForm({ ...manualPayment, amount: existingAmount });
+      const merchantInput = document.querySelector("#pay-merchant");
+      if (merchantInput) merchantInput.value = manualPayment.merchant || "个人收款码";
+      if (codeInput) {
+        codeInput.dataset.kind = manualPayment.kind;
+        codeInput.dataset.recipientUserId = manualPayment.recipientUserId || "";
+      }
     } else {
       fillPaymentForm(manualPayment);
     }
   }
 
   const merchant = document.querySelector("#pay-merchant").value || "商家";
-  const amount = parseAmount(amountInput?.value);
+  if (amountInput && !amountInput.value && amountBeforeParse) amountInput.value = amountBeforeParse;
+  const amount = parseAmount(amountInput?.value || amountBeforeParse);
   const recipientUserId = codeInput?.dataset.recipientUserId;
   const kind = codeInput?.dataset.kind;
 
   if (!amount) {
-    showToast("请输入正确的付款金额");
+    showToast(`请输入正确的付款金额，当前读取到：${amountInput?.value || "空"}`);
+    amountInput?.focus();
     return;
   }
   if (amount > walletBalance) {
