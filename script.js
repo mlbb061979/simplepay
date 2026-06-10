@@ -509,11 +509,19 @@ function stopScanner() {
 
 async function confirmScanPayment() {
   const codeInput = document.querySelector("#pay-code");
+  const amountInput = document.querySelector("#pay-amount");
   const manualPayment = parsePaymentCode(codeInput?.value);
-  if (manualPayment) fillPaymentForm(manualPayment);
+  if (manualPayment) {
+    if (manualPayment.kind === "receive") {
+      const existingAmount = parseAmount(amountInput?.value);
+      fillPaymentForm({ ...manualPayment, amount: existingAmount });
+    } else {
+      fillPaymentForm(manualPayment);
+    }
+  }
 
   const merchant = document.querySelector("#pay-merchant").value || "商家";
-  const amount = parseAmount(document.querySelector("#pay-amount").value);
+  const amount = parseAmount(amountInput?.value);
   const recipientUserId = codeInput?.dataset.recipientUserId;
   const kind = codeInput?.dataset.kind;
 
@@ -540,6 +548,10 @@ async function confirmScanPayment() {
     }
     closeDialog();
   } catch (error) {
+    if (error.code === "permission-denied") {
+      showToast("付款失败：Firestore 规则不允许写入收款方钱包");
+      return;
+    }
     showToast(error.message || "付款失败");
   }
 }
