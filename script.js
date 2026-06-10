@@ -57,14 +57,18 @@ const OWNER_ADMIN_EMAIL = "stanleyhoh79@gmail.com";
 let activeRole = sessionStorage.getItem("activeRole") || "";
 let currentUser = null;
 let walletUnsubscribe = null;
+let merchantUnsubscribe = null;
 let scannerStream = null;
 let scannerTimer = null;
 let dynamicQrId = 6130;
 let toastTimer;
 let walletBalance = 0;
 let walletStatus = "active";
+let merchantStatus = "pending";
+let currentMerchant = null;
 let userTransactions = [];
 let adminUsersCache = [];
+let merchantsCache = [];
 let rechargeRequestsCache = [];
 
 function formatMoney(amount) {
@@ -121,8 +125,10 @@ function parsePaymentCode(rawCode) {
       }
     }
 
+    const merchantId = url.searchParams.get("merchantId");
     const merchant = url.searchParams.get("merchant") || url.searchParams.get("m") || url.hostname;
     const amount = parseAmount(url.searchParams.get("amount") || url.searchParams.get("a"));
+    if (merchantId && merchant) return { kind: "merchant", merchantId, merchant, amount, code: raw };
     if (merchant && amount) return { kind: "merchant", merchant, amount, code: raw };
   } catch {
     const parts = parseKeyValueCode(raw);
@@ -177,6 +183,17 @@ function normalizeEmail(email) {
 
 function adminUserRef(email) {
   return doc(db, "adminUsers", normalizeEmail(email));
+}
+
+function merchantRef(user = currentUser) {
+  return doc(db, "merchants", user.uid);
+}
+
+function createMerchantCode(user = currentUser, amount = "") {
+  if (!user) return "";
+  const merchant = encodeURIComponent(currentMerchant?.businessName || user.displayName || user.email || "Merchant");
+  const amountPart = amount ? `&amount=${encodeURIComponent(amount)}` : "";
+  return `oneminpay://pay?merchantId=${encodeURIComponent(user.uid)}&merchant=${merchant}${amountPart}`;
 }
 
 function isOwnerAdmin(user = currentUser) {
@@ -246,6 +263,13 @@ function statusTag(status) {
     : '<span class="tag success">正常</span>';
 }
 
+function merchantStatusLabel(status) {
+  if (status === "approved") return '<span class="tag success">已通过</span>';
+  if (status === "rejected") return '<span class="tag danger">已拒绝</span>';
+  if (status === "frozen") return '<span class="tag danger">已冻结</span>';
+  return '<span class="tag warning">待审核</span>';
+}
+
 function renderAdminUsers(users = []) {
   const body = document.querySelector("#admin-users-body");
   if (!body) return;
@@ -281,6 +305,223 @@ async function loadAdminUsers() {
   const snapshot = await getDocs(collection(db, "wallets"));
   adminUsersCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
   renderAdminUsers(adminUsersCache);
+}
+
+function renderMerchants(merchants = []) {
+  const body = document.querySelector("#admin-merchants-body");
+  if (!body) return;
+  if (!merchants.length) {
+    body.innerHTML = '<tr><td colspan="5">暂无商家入驻资料</td></tr>';
+    return;
+  }
+
+  body.innerHTML = merchants
+    .map((merchant) => {
+      const status = merchant.status || "pending";
+      const pendingActions =
+        status === "pending"
+          ? `<button class="text-action merchant-action" data-action="approve" data-merchant-id="${merchant.id}">通过</button>
+             <button class="text-action merchant-action" data-action="reject" data-merchant-id="${merchant.id}">拒绝</button>`
+          : "";
+      const freezeAction =
+        status === "approved" || status === "frozen"
+          ? `<button class="text-action merchant-action" data-action="${status === "frozen" ? "unfreeze" : "freeze"}" data-merchant-id="${merchant.id}">
+              ${status === "frozen" ? "解冻" : "冻结"}
+             </button>`
+          : "";
+
+      return `
+        <tr>
+          <td>${merchant.businessName || merchant.displayName || "未命名商家"}</td>
+          <td>${merchant.email || "-"}</td>
+          <td>${merchantStatusLabel(status)}</td>
+          <td>${merchant.feeRate || "0.60%"}</td>
+          <td>
+            <button class="text-action merchant-action" data-action="view" data-merchant-id="${merchant.id}">查看</button>
+            ${pendingActions}
+            ${freezeAction}
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function setText(selector, value) {
+  const node = document.querySelector(selector);
+  if (node) node.textContent = value;
+}
+
+function renderList(selector, items, emptyText, mapper) {
+  const list = document.querySelector(selector);
+  if (!list) return;
+  if (!items.length) {
+    list.innerHTML = `<li><span>${emptyText}</span><strong>-</strong></li>`;
+    return;
+  }
+  list.innerHTML = items.slice(0, 8).map(mapper).join("");
+}
+
+function renderMerchantDashboard(data = {}) {
+  const orders = Array.isArray(data.orders) ? data.orders : [];
+  const refunds = Array.isArray(data.refunds) ? data.refunds : [];
+  const transactions = Array.isArray(data.transactions) ? data.transactions : [];
+  const notifications = Array.isArray(data.notifications) ? data.notifications : [];
+  const totalReceived = Number(data.totalReceived || 0);
+  const refundTotal = Number(data.refundTotal || 0);
+  const settlementBalance = Number(data.settlementBalance || 0);
+
+  setText("#merchant-total-received", formatMoney(totalReceived));
+  setText("#merchant-order-count", String(orders.length));
+  setText("#merchant-refund-total", formatMoney(refundTotal));
+  setText("#merchant-settlement-balance", formatMoney(settlementBalance));
+
+  const qrImage = document.querySelector("#merchant-qr-image");
+  const label = document.querySelector("#merchant-code-label");
+  const code = data.merchantCode || createMerchantCode();
+  if (qrImage && code) {
+    qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=10&data=${encodeURIComponent(code)}`;
+    qrImage.dataset.code = code;
+  }
+  if (label) label.textContent = data.status === "approved" ? `商家ID: ${currentUser?.uid.slice(0, 10)}...` : "审核通过后可收款";
+
+  const body = document.querySelector("#merchant-orders-body");
+  if (body) {
+    body.innerHTML = orders.length
+      ? orders
+          .slice(0, 20)
+          .map(
+            (order) => `
+              <tr>
+                <td>${order.id}</td>
+                <td>${order.customer || "-"}</td>
+                <td>${formatMoney(order.amount || 0)}</td>
+                <td>钱包余额</td>
+                <td>${statusTag(order.status || "approved")}</td>
+                <td><button class="text-action merchant-order-action" data-order-id="${order.id}" data-action="view">查看</button></td>
+              </tr>
+            `
+          )
+          .join("")
+      : '<tr><td colspan="6">暂无订单</td></tr>';
+  }
+
+  renderList("#merchant-refunds-list", refunds, "暂无退款申请", (item) => `<li><span>${item.id}</span><strong>${formatMoney(item.amount || 0)}</strong><button>审核</button></li>`);
+  renderList("#merchant-settlements-list", [{ amount: settlementBalance }], "暂无待结算余额", (item) => `<li><span>待结算余额</span><strong>${formatMoney(item.amount || 0)}</strong><button id="merchant-settlement-button" type="button">申请</button></li>`);
+  renderList("#merchant-transactions-list", transactions, "暂无交易记录", (item) => `<li><span>${item.type || "交易"} ${item.target || ""}</span><strong>${item.amount || "-"}</strong></li>`);
+  renderList("#merchant-notifications-list", notifications, "暂无支付通知", (item) => `<li><span>${item.text}</span><strong>${item.time || "刚刚"}</strong></li>`);
+}
+
+async function payMerchant(merchantId, merchantName, amount) {
+  const payerRef = walletRef();
+  const merchantDocRef = doc(db, "merchants", merchantId);
+  const orderId = `M${Date.now()}`;
+  const payerTx = transactionItem("商家付款", merchantName, `- ${formatMoney(amount)}`);
+
+  await runTransaction(db, async (transaction) => {
+    const payerSnap = await transaction.get(payerRef);
+    const merchantSnap = await transaction.get(merchantDocRef);
+    if (!merchantSnap.exists()) throw new Error("商家不存在");
+
+    const payerData = payerSnap.data() || {};
+    const merchantData = merchantSnap.data() || {};
+    if (merchantData.status !== "approved") throw new Error("商家未通过审核，无法收款");
+
+    const payerBalance = Number(payerData.balance || 0);
+    if (amount > payerBalance) throw new Error("钱包余额不足");
+
+    const order = {
+      id: orderId,
+      customer: currentUser.email,
+      amount,
+      status: "approved",
+      createdAt: new Date().toISOString(),
+    };
+    const merchantTx = transactionItem("QR收款", currentUser.email, `+ ${formatMoney(amount)}`);
+    const notification = { text: `订单 ${orderId} 支付成功`, time: "刚刚", createdAt: new Date().toISOString() };
+
+    transaction.set(
+      payerRef,
+      {
+        balance: payerBalance - amount,
+        transactions: [payerTx, ...(payerData.transactions || [])].slice(0, 30),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    transaction.set(
+      merchantDocRef,
+      {
+        totalReceived: Number(merchantData.totalReceived || 0) + amount,
+        settlementBalance: Number(merchantData.settlementBalance || 0) + amount,
+        orders: [order, ...(merchantData.orders || [])].slice(0, 50),
+        transactions: [merchantTx, ...(merchantData.transactions || [])].slice(0, 30),
+        notifications: [notification, ...(merchantData.notifications || [])].slice(0, 20),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+}
+
+async function loadMerchants() {
+  const body = document.querySelector("#admin-merchants-body");
+  if (body) body.innerHTML = '<tr><td colspan="5">正在加载商家数据...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "merchants"));
+  merchantsCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  renderMerchants(merchantsCache);
+}
+
+async function ensureMerchant(user) {
+  const ref = merchantRef(user);
+  const snap = await getDoc(ref);
+  if (snap.exists()) return;
+
+  await setDoc(ref, {
+    email: user.email,
+    displayName: user.displayName || "",
+    businessName: user.displayName ? `${user.displayName} 的商家` : "未命名商家",
+    status: "pending",
+    feeRate: "0.60%",
+    totalReceived: 0,
+    settlementBalance: 0,
+    refundTotal: 0,
+    orders: [],
+    refunds: [],
+    transactions: [],
+    notifications: [],
+    merchantCode: createMerchantCode(user),
+    createdAt: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+async function attachMerchant(user) {
+  if (merchantUnsubscribe) merchantUnsubscribe();
+  await ensureMerchant(user);
+
+  merchantUnsubscribe = onSnapshot(merchantRef(user), (snapshot) => {
+    const data = snapshot.data() || {};
+    currentMerchant = { id: user.uid, ...data };
+    merchantStatus = data.status || "pending";
+    const roleText = merchantStatus === "approved" ? "商家已通过审核" : `商家状态：${merchantStatus === "frozen" ? "已冻结" : merchantStatus === "rejected" ? "已拒绝" : "待审核"}`;
+    roleName.textContent = roleText;
+    renderMerchantDashboard(data);
+  });
+}
+
+async function updateMerchantStatus(merchantId, status) {
+  await setDoc(
+    doc(db, "merchants", merchantId),
+    {
+      status,
+      reviewedBy: currentUser.email,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await loadMerchants();
 }
 
 function renderRechargeRequests(requests = []) {
@@ -541,6 +782,7 @@ async function loginAs(target) {
     }
     enterRole(target);
     if (target === "user") await attachWallet(currentUser);
+    if (target === "merchant") await attachMerchant(currentUser);
     showToast(`${roleConfig[target].title}登录成功`);
   } catch (error) {
     showToast(`Google 登录失败：${error.message}`);
@@ -556,12 +798,15 @@ function enterRole(target) {
   loginGateway.classList.add("hidden");
   appShell.classList.remove("locked");
   if (target === "admin") loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
+  if (target === "admin") loadMerchants().catch((error) => showToast(error.message || "商家数据加载失败"));
   if (target === "admin") loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
 }
 
 async function logout() {
   if (walletUnsubscribe) walletUnsubscribe();
+  if (merchantUnsubscribe) merchantUnsubscribe();
   walletUnsubscribe = null;
+  merchantUnsubscribe = null;
   activeRole = "";
   currentUser = null;
   sessionStorage.removeItem("activeRole");
@@ -572,6 +817,7 @@ async function logout() {
   currentRole.textContent = "未登录";
   roleName.textContent = "-";
   setWalletBalance(0);
+  merchantStatus = "pending";
   emptyTransactionRow("登录后显示当前账户交易记录");
   showToast("已退出登录");
 }
@@ -646,6 +892,7 @@ function fillPaymentForm(payment) {
   if (codeInput) codeInput.value = payment.code || "";
   if (codeInput) codeInput.dataset.kind = payment.kind || "";
   if (codeInput) codeInput.dataset.recipientUserId = payment.recipientUserId || "";
+  if (codeInput) codeInput.dataset.merchantId = payment.merchantId || "";
   if (result) {
     result.textContent =
       payment.kind === "receive"
@@ -780,7 +1027,12 @@ async function confirmScanPayment() {
       await transferToUser(recipientUserId, merchant, amount);
       showToast(`转账成功，已付款 ${formatMoney(amount)}`);
     } else {
-      await updateWalletBalance(-amount, transactionItem("扫码付款", merchant, `- ${formatMoney(amount)}`));
+      const merchantId = manualPayment?.merchantId || codeInput?.dataset.merchantId;
+      if (merchantId) {
+        await payMerchant(merchantId, merchant, amount);
+      } else {
+        await updateWalletBalance(-amount, transactionItem("扫码付款", merchant, `- ${formatMoney(amount)}`));
+      }
       showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
     }
     closeDialog();
@@ -890,13 +1142,83 @@ function handleUserButton(button) {
 
 function handleMerchantButton(button) {
   const text = button.textContent.trim();
+  if (merchantStatus !== "approved") {
+    const message =
+      merchantStatus === "frozen"
+        ? "商家账户已被冻结，无法操作"
+        : merchantStatus === "rejected"
+          ? "商家入驻已被拒绝，无法操作"
+          : "商家资料待后台审核，通过后才能操作";
+    showToast(message);
+    return;
+  }
+
   if (text.includes("动态")) {
-    dynamicQrId += 1;
-    const panel = button.closest(".qr-panel");
-    const idLine = panel.querySelector("p") || document.createElement("p");
-    idLine.textContent = `动态码: M-${dynamicQrId}`;
-    panel.appendChild(idLine);
-    showToast("已生成新的商家动态收款码");
+    openDialog(
+      "生成动态收款码",
+      `<label class="field-label">固定金额</label>
+       <input class="dialog-input" id="merchant-dynamic-amount" placeholder="留空为任意金额" />
+       <p class="dialog-note">用户扫码后会自动带入商家信息，填写金额后可直接付款。</p>`,
+      "生成",
+      async () => {
+        const amount = document.querySelector("#merchant-dynamic-amount").value.trim();
+        const code = createMerchantCode(currentUser, amount);
+        await setDoc(merchantRef(), { merchantCode: code, updatedAt: serverTimestamp() }, { merge: true });
+        closeDialog();
+        showToast("动态收款码已生成");
+      }
+    );
+    return;
+  }
+
+  if (button.classList.contains("merchant-order-action")) {
+    const order = (currentMerchant?.orders || []).find((item) => item.id === button.dataset.orderId);
+    openDialog(
+      "订单详情",
+      `<div class="detail-list">
+        <p><strong>订单号：</strong>${order?.id || "-"}</p>
+        <p><strong>顾客：</strong>${order?.customer || "-"}</p>
+        <p><strong>金额：</strong>${formatMoney(order?.amount || 0)}</p>
+        <p><strong>状态：</strong>已支付</p>
+      </div>`,
+      "关闭",
+      closeDialog
+    );
+    return;
+  }
+
+  if (button.id === "merchant-settlement-button") {
+    const amount = Number(currentMerchant?.settlementBalance || 0);
+    if (!amount) {
+      showToast("当前没有可结算金额");
+      return;
+    }
+    openDialog(
+      "申请结算",
+      `<p class="dialog-note">本次申请结算 ${formatMoney(amount)}，原型会生成结算记录并清空待结算余额。</p>`,
+      "提交结算",
+      async () => {
+        const settlement = {
+          id: `S${Date.now()}`,
+          amount,
+          status: "pending",
+          time: "刚刚",
+          createdAt: new Date().toISOString(),
+        };
+        await setDoc(
+          merchantRef(),
+          {
+            settlementBalance: 0,
+            settlements: [settlement, ...(currentMerchant?.settlements || [])].slice(0, 20),
+            notifications: [{ text: `结算 ${settlement.id} 已提交`, time: "刚刚" }, ...(currentMerchant?.notifications || [])].slice(0, 20),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        closeDialog();
+        showToast("结算申请已提交");
+      }
+    );
     return;
   }
 
@@ -977,6 +1299,46 @@ function handleAdminButton(button) {
     loadRechargeRequests()
       .then(() => showToast("充值申请已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "refresh-merchants-button") {
+    loadMerchants()
+      .then(() => showToast("商家列表已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.classList.contains("merchant-action")) {
+    const merchantId = button.dataset.merchantId;
+    const action = button.dataset.action;
+    const merchant = merchantsCache.find((item) => item.id === merchantId);
+
+    if (action === "view") {
+      openDialog(
+        "商家详情",
+        `<div class="detail-list">
+          <p><strong>商家名称：</strong>${merchant?.businessName || "-"}</p>
+          <p><strong>邮箱：</strong>${merchant?.email || "-"}</p>
+          <p><strong>UID：</strong>${merchantId}</p>
+          <p><strong>状态：</strong>${merchant?.status || "pending"}</p>
+          <p><strong>费率：</strong>${merchant?.feeRate || "0.60%"}</p>
+        </div>`,
+        "关闭",
+        closeDialog
+      );
+      return;
+    }
+
+    const statusMap = {
+      approve: "approved",
+      reject: "rejected",
+      freeze: "frozen",
+      unfreeze: "approved",
+    };
+    updateMerchantStatus(merchantId, statusMap[action])
+      .then(() => showToast("商家状态已更新"))
+      .catch((error) => showToast(error.message || "操作失败"));
     return;
   }
 
@@ -1091,4 +1453,5 @@ onAuthStateChanged(auth, async (user) => {
   }
   enterRole(activeRole);
   if (activeRole === "user") await attachWallet(user);
+  if (activeRole === "merchant") await attachMerchant(user);
 });

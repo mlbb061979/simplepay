@@ -118,16 +118,17 @@
           <div class="dashboard-grid">
             <article class="action-panel qr-panel">
               <h2>商家收款码</h2>
-              <div class="qr-code merchant-qr" aria-label="模拟商家收款二维码"></div>
-              <button class="primary-action">生成动态码</button>
+              <img class="receive-qr-image" id="merchant-qr-image" alt="商家收款二维码" />
+              <p id="merchant-code-label">审核通过后生成商家收款码</p>
+              <button class="primary-action" id="generate-merchant-code" type="button">生成动态码</button>
             </article>
             <article class="metrics-panel wide">
               <div class="panel-header"><h2>收款看板</h2><span>今日</span></div>
               <div class="metric-row">
-                <div><span>收款金额</span><strong>RM 18,420</strong></div>
-                <div><span>订单数</span><strong>386</strong></div>
-                <div><span>退款</span><strong>RM 420</strong></div>
-                <div><span>待结算</span><strong>RM 12,900</strong></div>
+                <div><span>收款金额</span><strong id="merchant-total-received">RM 0.00</strong></div>
+                <div><span>订单数</span><strong id="merchant-order-count">0</strong></div>
+                <div><span>退款</span><strong id="merchant-refund-total">RM 0.00</strong></div>
+                <div><span>待结算</span><strong id="merchant-settlement-balance">RM 0.00</strong></div>
               </div>
             </article>
             <article class="table-panel full">
@@ -136,16 +137,15 @@
                 <thead>
                   <tr><th>订单号</th><th>顾客</th><th>金额</th><th>支付方式</th><th>状态</th><th>操作</th></tr>
                 </thead>
-                <tbody>
-                  <tr><td>M20260603001</td><td>Chen</td><td>RM 68.20</td><td>QR Pay</td><td><span class="tag success">已支付</span></td><td><button class="text-action">查看</button></td></tr>
-                  <tr><td>M20260603002</td><td>Aisyah</td><td>RM 31.00</td><td>钱包余额</td><td><span class="tag warning">待退款</span></td><td><button class="text-action">处理</button></td></tr>
+                <tbody id="merchant-orders-body">
+                  <tr><td colspan="6">审核通过后显示商家订单</td></tr>
                 </tbody>
               </table>
             </article>
-            <article class="list-panel"><h2>退款处理</h2><ul><li><span>R-1028</span><strong>RM 31.00</strong><button>通过</button></li><li><span>R-1029</span><strong>RM 8.60</strong><button>审核</button></li></ul></article>
-            <article class="list-panel"><h2>结算管理</h2><ul><li><span>今日待结算</span><strong>RM 12,900</strong><button>申请</button></li><li><span>昨日已到账</span><strong>RM 16,780</strong><button>凭证</button></li></ul></article>
-            <article class="list-panel"><h2>交易记录</h2><ul><li><span>10:30 QR 收款</span><strong>+ RM 46.00</strong></li><li><span>10:22 退款</span><strong>- RM 12.00</strong></li><li><span>10:10 QR 收款</span><strong>+ RM 19.90</strong></li></ul></article>
-            <article class="list-panel"><h2>支付通知</h2><ul><li><span>订单 M001 支付成功</span><strong>刚刚</strong></li><li><span>退款 R1028 待审核</span><strong>5分钟前</strong></li><li><span>结算批次已生成</span><strong>20分钟前</strong></li></ul></article>
+            <article class="list-panel"><h2>退款处理</h2><ul id="merchant-refunds-list"><li><span>暂无退款申请</span><strong>-</strong></li></ul></article>
+            <article class="list-panel"><h2>结算管理</h2><ul id="merchant-settlements-list"><li><span>待结算余额</span><strong>RM 0.00</strong><button id="merchant-settlement-button" type="button">申请</button></li></ul></article>
+            <article class="list-panel"><h2>交易记录</h2><ul id="merchant-transactions-list"><li><span>暂无交易记录</span><strong>-</strong></li></ul></article>
+            <article class="list-panel"><h2>支付通知</h2><ul id="merchant-notifications-list"><li><span>暂无支付通知</span><strong>-</strong></li></ul></article>
           </div>
         </section>
 
@@ -196,6 +196,20 @@
                 </thead>
                 <tbody id="admin-users-body">
                   <tr><td colspan="5">进入后台后加载用户数据</td></tr>
+                </tbody>
+              </table>
+            </article>
+            <article class="table-panel" id="admin-merchant-management">
+              <div class="panel-header">
+                <h2>商家管理</h2>
+                <button class="ghost-action" id="refresh-merchants-button" type="button">刷新商家</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>商家</th><th>邮箱</th><th>状态</th><th>费率</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-merchants-body">
+                  <tr><td colspan="5">进入后台后加载商家数据</td></tr>
                 </tbody>
               </table>
             </article>
