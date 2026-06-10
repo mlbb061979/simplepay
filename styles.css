@@ -81,7 +81,7 @@ h2 { font-size: 17px; }
 .dashboard-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; }
 .full { grid-column: 1 / -1; }
 .wide { grid-column: span 3; }
-.balance-panel, .action-panel, .table-panel, .metrics-panel, .list-panel, .module-card, .login-panel {
+.balance-panel, .action-panel, .table-panel, .metrics-panel, .list-panel, .module-card, .login-panel, .admin-auth-panel {
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow);
 }
 .login-panel {
@@ -157,6 +157,12 @@ th { color: var(--muted); font-size: 12px; font-weight: 700; }
   min-height: 44px; border-bottom: 1px solid var(--line);
 }
 .admin-layout { display: grid; gap: 18px; }
+.admin-auth-panel {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .9fr);
+  align-items: center; gap: 18px; padding: 20px;
+}
+.admin-auth-panel p { margin-top: 8px; color: var(--muted); line-height: 1.55; }
+.admin-auth-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .module-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .module-card { min-height: 128px; }
 .module-card { cursor: pointer; transition: transform .16s ease, border-color .16s ease; }
@@ -239,4 +245,5 @@ th { color: var(--muted); font-size: 12px; font-weight: 700; }
   .table-panel { overflow-x: auto; }
   table { min-width: 620px; }
   .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-auth-panel, .admin-auth-form { grid-template-columns: 1fr; }
 }

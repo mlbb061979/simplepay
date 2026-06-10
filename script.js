@@ -50,6 +50,7 @@ const roleConfig = {
   merchant: { title: "商家界面", label: "商家 Google 账号" },
   admin: { title: "后台界面", label: "管理员 Google 账号" },
 };
+const OWNER_ADMIN_EMAIL = "REPLACE_WITH_OWNER_GOOGLE_EMAIL";
 
 let activeRole = sessionStorage.getItem("activeRole") || "";
 let currentUser = null;
@@ -163,6 +164,44 @@ function setWalletBalance(amount) {
 
 function walletRef(user = currentUser) {
   return doc(db, "wallets", user.uid);
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function adminUserRef(email) {
+  return doc(db, "adminUsers", normalizeEmail(email));
+}
+
+function isOwnerAdmin(user = currentUser) {
+  return normalizeEmail(user?.email) === normalizeEmail(OWNER_ADMIN_EMAIL);
+}
+
+async function isAuthorizedAdmin(user) {
+  if (!user?.email) return false;
+  if (isOwnerAdmin(user)) return true;
+
+  const adminSnap = await getDoc(adminUserRef(user.email));
+  const data = adminSnap.data();
+  return adminSnap.exists() && data?.enabled === true;
+}
+
+async function authorizeAdminEmail(email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    throw new Error("请输入正确的管理员邮箱");
+  }
+  if (!isOwnerAdmin()) {
+    throw new Error("只有主后台账号可以授权其他管理员");
+  }
+
+  await setDoc(adminUserRef(normalizedEmail), {
+    email: normalizedEmail,
+    enabled: true,
+    authorizedBy: currentUser.email,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 function emptyTransactionRow(message) {
@@ -319,6 +358,17 @@ async function loginAs(target) {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     currentUser = result.user;
+    if (target === "admin") {
+      const allowed = await isAuthorizedAdmin(currentUser);
+      if (!allowed) {
+        activeRole = "";
+        sessionStorage.removeItem("activeRole");
+        await signOut(auth);
+        currentUser = null;
+        showToast("后台登录被拒绝：该 Google 账号未获授权");
+        return;
+      }
+    }
     enterRole(target);
     if (target === "user") await attachWallet(currentUser);
     showToast(`${roleConfig[target].title}登录成功`);
@@ -736,6 +786,17 @@ function handleMerchantButton(button) {
 
 function handleAdminButton(button) {
   const text = button.textContent.trim();
+  if (button.id === "authorize-admin-button") {
+    const input = document.querySelector("#admin-email-input");
+    authorizeAdminEmail(input?.value)
+      .then(() => {
+        showToast(`已授权 ${normalizeEmail(input.value)} 登录后台`);
+        input.value = "";
+      })
+      .catch((error) => showToast(error.message || "授权失败"));
+    return;
+  }
+
   if (text.includes("查看")) {
     openDialog(
       "后台交易监控",
