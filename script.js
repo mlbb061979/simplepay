@@ -845,6 +845,22 @@ document.querySelectorAll(".module-card").forEach((card) => {
 onAuthStateChanged(auth, async (user) => {
   currentUser = user;
   if (!user || !activeRole) return;
+  if (activeRole === "admin") {
+    const allowed = await isAuthorizedAdmin(user);
+    if (!allowed) {
+      activeRole = "";
+      currentUser = null;
+      sessionStorage.removeItem("activeRole");
+      await signOut(auth);
+      showOnlyView("");
+      appShell.classList.add("locked");
+      loginGateway.classList.remove("hidden");
+      currentRole.textContent = "未登录";
+      roleName.textContent = "-";
+      showToast("后台登录被拒绝：该 Google 账号未获授权");
+      return;
+    }
+  }
   enterRole(activeRole);
   if (activeRole === "user") await attachWallet(user);
 });
