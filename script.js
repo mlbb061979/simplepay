@@ -11,6 +11,7 @@ import {
   getDoc,
   getFirestore,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
   setDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
@@ -37,6 +38,7 @@ const currentRole = document.querySelector("#current-role");
 const roleName = document.querySelector("#role-name");
 const logoutButton = document.querySelector("#logout-button");
 const authButtons = document.querySelectorAll(".auth-action");
+const userTransactionsBody = document.querySelector("#user-transactions");
 const views = {
   user: document.querySelector("#user-view"),
   merchant: document.querySelector("#merchant-view"),
@@ -56,18 +58,38 @@ let scannerStream = null;
 let scannerTimer = null;
 let dynamicQrId = 6130;
 let toastTimer;
-let walletBalance = readWalletBalance();
+let walletBalance = 0;
+let userTransactions = [];
 
 function formatMoney(amount) {
-  return `RM ${amount.toLocaleString("en-MY", {
+  return `RM ${Number(amount || 0).toLocaleString("en-MY", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
 }
 
 function parseAmount(value) {
-  const amount = Number(String(value).replace(/,/g, "").trim());
+  const amount = Number(String(value || "").replace(/,/g, "").trim());
   return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function decodeParam(value) {
+  try {
+    return decodeURIComponent(value || "");
+  } catch {
+    return value || "";
+  }
+}
+
+function parseKeyValueCode(raw) {
+  return Object.fromEntries(
+    String(raw)
+      .split(/[|&;]/)
+      .map((part) => {
+        const [key, value = ""] = part.split("=");
+        return [key.trim().toLowerCase(), decodeParam(value.trim())];
+      })
+  );
 }
 
 function parsePaymentCode(rawCode) {
@@ -76,19 +98,33 @@ function parsePaymentCode(rawCode) {
 
   try {
     const url = raw.includes("://") ? new URL(raw) : new URL(`https://pay.local/?${raw}`);
+    const action = url.hostname === "receive" || url.pathname.includes("receive") ? "receive" : "pay";
+    if (action === "receive") {
+      const recipientUserId = url.searchParams.get("userId");
+      const name = url.searchParams.get("name") || "个人收款码";
+      if (recipientUserId) {
+        return { kind: "receive", recipientUserId, merchant: name, amount: null, code: raw };
+      }
+    }
+
     const merchant = url.searchParams.get("merchant") || url.searchParams.get("m") || url.hostname;
     const amount = parseAmount(url.searchParams.get("amount") || url.searchParams.get("a"));
-    if (merchant && amount) return { merchant, amount, code: raw };
-  } catch (error) {
-    const parts = Object.fromEntries(
-      raw.split(/[|&;]/).map((part) => {
-        const [key, value = ""] = part.split("=");
-        return [key.trim().toLowerCase(), decodeURIComponent(value.trim())];
-      })
-    );
+    if (merchant && amount) return { kind: "merchant", merchant, amount, code: raw };
+  } catch {
+    const parts = parseKeyValueCode(raw);
+    if (parts.userid || parts.user) {
+      return {
+        kind: "receive",
+        recipientUserId: parts.userid || parts.user,
+        merchant: parts.name || "个人收款码",
+        amount: parseAmount(parts.amount),
+        code: raw,
+      };
+    }
+
     const merchant = parts.merchant || parts.m || parts.shop;
     const amount = parseAmount(parts.amount || parts.a);
-    if (merchant && amount) return { merchant, amount, code: raw };
+    if (merchant && amount) return { kind: "merchant", merchant, amount, code: raw };
   }
 
   return null;
@@ -105,81 +141,161 @@ function updateReceiveQr(receiveCode) {
   const label = document.querySelector("#receive-code-label");
   if (!receiveCode || !qrImage || !label) return;
 
+  const userId = new URL(receiveCode).searchParams.get("userId") || "";
   qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=10&data=${encodeURIComponent(receiveCode)}`;
   qrImage.dataset.code = receiveCode;
-  label.textContent = `固定收款ID: ${receiveCode.slice(receiveCode.indexOf("userId=") + 7, receiveCode.indexOf("&name=")).slice(0, 10)}...`;
-}
-
-function getWalletBalanceElement() {
-  return document.querySelector("#wallet-balance") || document.querySelector(".balance-panel strong");
-}
-
-function readWalletBalance() {
-  const balance = getWalletBalanceElement();
-  if (!balance) return 1268.5;
-  const amount = Number(balance.textContent.replace(/[^\d.]/g, ""));
-  return Number.isFinite(amount) ? amount : 1268.5;
+  label.textContent = `固定收款ID: ${userId.slice(0, 10)}...`;
 }
 
 function setWalletBalance(amount) {
-  walletBalance = Math.max(0, amount);
-  const balance = getWalletBalanceElement();
+  walletBalance = Math.max(0, Number(amount || 0));
+  const balance = document.querySelector("#wallet-balance") || document.querySelector(".balance-panel strong");
   if (balance) balance.textContent = formatMoney(walletBalance);
 }
 
-function getWalletRef(user = currentUser) {
+function walletRef(user = currentUser) {
   return doc(db, "wallets", user.uid);
+}
+
+function emptyTransactionRow(message) {
+  if (!userTransactionsBody) return;
+  userTransactionsBody.innerHTML = `<tr><td colspan="5">${message}</td></tr>`;
+}
+
+function renderUserTransactions(transactions = []) {
+  if (!userTransactionsBody) return;
+  if (!transactions.length) {
+    emptyTransactionRow("当前账户暂无交易记录");
+    return;
+  }
+
+  userTransactionsBody.innerHTML = transactions
+    .slice(0, 30)
+    .map(
+      (item) => `
+        <tr>
+          <td>${item.time || "刚刚"}</td>
+          <td>${item.type || "-"}</td>
+          <td>${item.target || "-"}</td>
+          <td>${item.amount || "-"}</td>
+          <td><span class="tag ${item.statusClass || "success"}">${item.status || "成功"}</span></td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+function transactionItem(type, target, amount) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    time: "刚刚",
+    type,
+    target,
+    amount,
+    status: "成功",
+    statusClass: "success",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function ensureWallet(user) {
+  const ref = walletRef(user);
+  const snap = await getDoc(ref);
+  const receiveCode = createReceiveCode(user);
+
+  if (!snap.exists()) {
+    await setDoc(ref, {
+      balance: 0,
+      email: user.email,
+      displayName: user.displayName || "",
+      receiveCode,
+      role: "user",
+      transactions: [],
+      updatedAt: serverTimestamp(),
+    });
+    return;
+  }
+
+  const data = snap.data();
+  if (!data.receiveCode) {
+    await setDoc(ref, { receiveCode, updatedAt: serverTimestamp() }, { merge: true });
+  }
 }
 
 async function attachWallet(user) {
   if (walletUnsubscribe) walletUnsubscribe();
-  const walletRef = getWalletRef(user);
-  const walletDoc = await getDoc(walletRef);
+  await ensureWallet(user);
 
-  if (!walletDoc.exists()) {
-    const receiveCode = createReceiveCode(user);
-    await setDoc(walletRef, {
-      balance: walletBalance,
-      email: user.email,
-      receiveCode,
-      role: "user",
-      updatedAt: serverTimestamp(),
-    });
-    updateReceiveQr(receiveCode);
-  } else {
-    const data = walletDoc.data();
-    const receiveCode = data.receiveCode || createReceiveCode(user);
-    updateReceiveQr(receiveCode);
-    if (!data.receiveCode) {
-      await setDoc(walletRef, { receiveCode, updatedAt: serverTimestamp() }, { merge: true });
-    }
-  }
-
-  walletUnsubscribe = onSnapshot(walletRef, (snapshot) => {
-    const data = snapshot.data();
-    if (data && typeof data.balance === "number") {
-      setWalletBalance(data.balance);
-    }
-    if (data?.receiveCode) updateReceiveQr(data.receiveCode);
+  walletUnsubscribe = onSnapshot(walletRef(user), (snapshot) => {
+    const data = snapshot.data() || {};
+    setWalletBalance(data.balance || 0);
+    userTransactions = Array.isArray(data.transactions) ? data.transactions : [];
+    renderUserTransactions(userTransactions);
+    updateReceiveQr(data.receiveCode || createReceiveCode(user));
   });
 }
 
-async function updateWalletBalance(change) {
-  const nextBalance = Math.max(0, walletBalance + change);
-  setWalletBalance(nextBalance);
+async function saveOwnWallet(nextBalance, transactions = userTransactions) {
+  if (!currentUser || activeRole !== "user") return;
+  await setDoc(
+    walletRef(),
+    {
+      balance: nextBalance,
+      email: currentUser.email,
+      displayName: currentUser.displayName || "",
+      receiveCode: createReceiveCode(currentUser),
+      role: "user",
+      transactions: transactions.slice(0, 30),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
 
-  if (currentUser && activeRole === "user") {
-    await setDoc(
-      getWalletRef(),
+async function updateWalletBalance(change, txItem) {
+  const nextBalance = Math.max(0, walletBalance + change);
+  const transactions = txItem ? [txItem, ...userTransactions].slice(0, 30) : userTransactions;
+  setWalletBalance(nextBalance);
+  renderUserTransactions(transactions);
+  await saveOwnWallet(nextBalance, transactions);
+}
+
+async function transferToUser(recipientUserId, recipientName, amount) {
+  const payerRef = walletRef();
+  const recipientRef = doc(db, "wallets", recipientUserId);
+  const payerTx = transactionItem("扫码转账", recipientName || "个人收款码", `- ${formatMoney(amount)}`);
+  const recipientTx = transactionItem("收款", currentUser.displayName || currentUser.email || "用户", `+ ${formatMoney(amount)}`);
+
+  await runTransaction(db, async (transaction) => {
+    const payerSnap = await transaction.get(payerRef);
+    const recipientSnap = await transaction.get(recipientRef);
+    if (!recipientSnap.exists()) throw new Error("收款账户不存在，请让对方先登录生成收款码");
+
+    const payerData = payerSnap.data() || {};
+    const recipientData = recipientSnap.data() || {};
+    const payerBalance = Number(payerData.balance || 0);
+    const recipientBalance = Number(recipientData.balance || 0);
+    if (amount > payerBalance) throw new Error("钱包余额不足");
+
+    transaction.set(
+      payerRef,
       {
-        balance: nextBalance,
-        email: currentUser.email,
-        role: "user",
+        balance: payerBalance - amount,
+        transactions: [payerTx, ...(payerData.transactions || [])].slice(0, 30),
         updatedAt: serverTimestamp(),
       },
       { merge: true }
     );
-  }
+    transaction.set(
+      recipientRef,
+      {
+        balance: recipientBalance + amount,
+        transactions: [recipientTx, ...(recipientData.transactions || [])].slice(0, 30),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
 }
 
 function showOnlyView(target) {
@@ -225,6 +341,8 @@ async function logout() {
   loginGateway.classList.remove("hidden");
   currentRole.textContent = "未登录";
   roleName.textContent = "-";
+  setWalletBalance(0);
+  emptyTransactionRow("登录后显示当前账户交易记录");
   showToast("已退出登录");
 }
 
@@ -249,13 +367,11 @@ function ensureOverlay() {
     </div>
   `;
   document.body.appendChild(overlay);
-
   overlay.querySelector(".dialog-close").addEventListener("click", closeDialog);
   overlay.querySelector(".dialog-cancel").addEventListener("click", closeDialog);
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay) closeDialog();
   });
-
   return overlay;
 }
 
@@ -283,27 +399,10 @@ function showToast(message) {
     toast.className = "toast";
     document.body.appendChild(toast);
   }
-
   toast.textContent = message;
   toast.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.remove("show"), 2600);
-}
-
-function addTransaction(type, target, amount, status = "成功") {
-  const activeView = document.querySelector(".view.active");
-  const tbody = activeView?.querySelector("tbody");
-  if (!tbody) return;
-
-  const row = document.createElement("tr");
-  row.innerHTML = `
-    <td>刚刚</td>
-    <td>${type}</td>
-    <td>${target}</td>
-    <td>${amount}</td>
-    <td><span class="tag success">${status}</span></td>
-  `;
-  tbody.prepend(row);
 }
 
 function fillPaymentForm(payment) {
@@ -312,10 +411,17 @@ function fillPaymentForm(payment) {
   const codeInput = document.querySelector("#pay-code");
   const result = document.querySelector("#scan-result");
 
-  if (merchantInput) merchantInput.value = payment.merchant;
-  if (amountInput) amountInput.value = payment.amount.toFixed(2);
+  if (merchantInput) merchantInput.value = payment.merchant || "个人收款码";
+  if (amountInput) amountInput.value = payment.amount ? payment.amount.toFixed(2) : "";
   if (codeInput) codeInput.value = payment.code || "";
-  if (result) result.textContent = `已识别：${payment.merchant}，${formatMoney(payment.amount)}`;
+  if (codeInput) codeInput.dataset.kind = payment.kind || "";
+  if (codeInput) codeInput.dataset.recipientUserId = payment.recipientUserId || "";
+  if (result) {
+    result.textContent =
+      payment.kind === "receive"
+        ? `已识别个人收款码：${payment.merchant}，请输入转账金额`
+        : `已识别商家付款码：${payment.merchant}，${formatMoney(payment.amount)}`;
+  }
 }
 
 async function startScanner() {
@@ -328,7 +434,6 @@ async function startScanner() {
     if (result) result.textContent = "手机摄像头需要 HTTPS 页面，请使用 GitHub Pages 的 https:// 地址打开。";
     return;
   }
-
   if (!("mediaDevices" in navigator) || !navigator.mediaDevices.getUserMedia) {
     if (result) result.textContent = "当前浏览器不支持摄像头扫码，请使用手动付款码。";
     return;
@@ -345,11 +450,8 @@ async function startScanner() {
         video: { facingMode: { ideal: "environment" } },
         audio: false,
       });
-    } catch (error) {
-      scannerStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: false,
-      });
+    } catch {
+      scannerStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
     }
 
     video.setAttribute("autoplay", "");
@@ -361,7 +463,7 @@ async function startScanner() {
       startButton.disabled = false;
       startButton.textContent = "扫码中";
     }
-    if (result) result.textContent = "请把商家二维码放入取景框";
+    if (result) result.textContent = "请把二维码放入取景框";
 
     if ("BarcodeDetector" in window) {
       const detector = new BarcodeDetector({ formats: ["qr_code"] });
@@ -372,7 +474,7 @@ async function startScanner() {
         if (payment) {
           fillPaymentForm(payment);
           stopScanner();
-          showToast("已识别付款二维码");
+          showToast("已识别二维码");
         }
       }, 800);
     } else if (result) {
@@ -397,9 +499,7 @@ async function startScanner() {
 function stopScanner() {
   if (scannerTimer) window.clearInterval(scannerTimer);
   scannerTimer = null;
-  if (scannerStream) {
-    scannerStream.getTracks().forEach((track) => track.stop());
-  }
+  if (scannerStream) scannerStream.getTracks().forEach((track) => track.stop());
   scannerStream = null;
   const video = document.querySelector("#scanner-video");
   if (video) video.srcObject = null;
@@ -414,6 +514,9 @@ async function confirmScanPayment() {
 
   const merchant = document.querySelector("#pay-merchant").value || "商家";
   const amount = parseAmount(document.querySelector("#pay-amount").value);
+  const recipientUserId = codeInput?.dataset.recipientUserId;
+  const kind = codeInput?.dataset.kind;
+
   if (!amount) {
     showToast("请输入正确的付款金额");
     return;
@@ -423,10 +526,22 @@ async function confirmScanPayment() {
     return;
   }
 
-  await updateWalletBalance(-amount);
-  addTransaction("扫码付款", merchant, `- ${formatMoney(amount)}`);
-  closeDialog();
-  showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
+  try {
+    if (kind === "receive" && recipientUserId) {
+      if (recipientUserId === currentUser.uid) {
+        showToast("不能付款给自己的收款码");
+        return;
+      }
+      await transferToUser(recipientUserId, merchant, amount);
+      showToast(`转账成功，已付款 ${formatMoney(amount)}`);
+    } else {
+      await updateWalletBalance(-amount, transactionItem("扫码付款", merchant, `- ${formatMoney(amount)}`));
+      showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
+    }
+    closeDialog();
+  } catch (error) {
+    showToast(error.message || "付款失败");
+  }
 }
 
 function handleUserButton(button) {
@@ -447,7 +562,7 @@ function handleUserButton(button) {
       "钱包充值",
       `<label class="field-label">充值金额</label>
        <input class="dialog-input" id="recharge-amount" value="100.00" />
-       <p class="dialog-note">充值后会写入 Firebase，同一个 Google 账号在电脑和手机会同步余额。</p>`,
+       <p class="dialog-note">充值后会写入 Firebase，仅当前 Google 账号的钱包余额会增加。</p>`,
       "确认充值",
       async () => {
         const amount = parseAmount(document.querySelector("#recharge-amount").value);
@@ -455,8 +570,7 @@ function handleUserButton(button) {
           showToast("请输入正确的充值金额");
           return;
         }
-        await updateWalletBalance(amount);
-        addTransaction("充值", "Google Pay", `+ ${formatMoney(amount)}`);
+        await updateWalletBalance(amount, transactionItem("充值", "Google Pay", `+ ${formatMoney(amount)}`));
         closeDialog();
         showToast(`充值成功，余额已增加 ${formatMoney(amount)}`);
       }
@@ -475,19 +589,20 @@ function handleUserButton(button) {
         <button class="text-action" id="start-scanner" type="button">打开摄像头扫码</button>
         <button class="text-action" id="use-demo-code" type="button">使用测试码</button>
       </div>
-      <p class="dialog-note" id="scan-result">支持付款码格式：oneminpay://pay?merchant=MY%20Coffee&amount=12.80</p>
+      <p class="dialog-note" id="scan-result">可扫描商家付款码，或扫描其他用户的固定收款码。</p>
        <label class="field-label">付款码内容</label>
-       <input class="dialog-input" id="pay-code" placeholder="粘贴或输入商家付款码" />
-       <label class="field-label">商家</label>
-       <input class="dialog-input" id="pay-merchant" value="MY Coffee" />
+       <input class="dialog-input" id="pay-code" placeholder="粘贴或输入商家付款码/用户收款码" />
+       <label class="field-label">对象</label>
+       <input class="dialog-input" id="pay-merchant" value="" placeholder="扫码后自动填入" />
        <label class="field-label">付款金额</label>
-       <input class="dialog-input" id="pay-amount" value="12.80" />`,
+       <input class="dialog-input" id="pay-amount" value="" placeholder="请输入金额" />`,
       "确认付款",
       confirmScanPayment
     );
     document.querySelector("#start-scanner").addEventListener("click", startScanner);
     document.querySelector("#use-demo-code").addEventListener("click", () => {
       fillPaymentForm({
+        kind: "merchant",
         merchant: "MY Coffee",
         amount: 12.8,
         code: "oneminpay://pay?merchant=MY%20Coffee&amount=12.80",
@@ -619,7 +734,6 @@ logoutButton.addEventListener("click", logout);
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button || button.classList.contains("auth-action") || button.id === "logout-button") return;
-
   const activeView = document.querySelector(".view.active");
   if (!activeView) return;
   if (button.closest("#action-overlay") || !activeView.contains(button)) return;

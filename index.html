@@ -81,7 +81,7 @@
             <article class="balance-panel">
               <div>
                 <span>钱包余额</span>
-                <strong id="wallet-balance">RM 1,268.50</strong>
+                <strong id="wallet-balance">RM 0.00</strong>
                 <p>今日可用额度 RM 4,000.00</p>
               </div>
               <button class="primary-action">充值</button>
@@ -106,10 +106,8 @@
                 <thead>
                   <tr><th>时间</th><th>类型</th><th>对象</th><th>金额</th><th>状态</th></tr>
                 </thead>
-                <tbody>
-                  <tr><td>10:28</td><td>扫码付款</td><td>MY Coffee</td><td>- RM 12.80</td><td><span class="tag success">成功</span></td></tr>
-                  <tr><td>09:16</td><td>收款</td><td>Lee Wei</td><td>+ RM 88.00</td><td><span class="tag success">成功</span></td></tr>
-                  <tr><td>昨天</td><td>退款</td><td>Fresh Mart</td><td>+ RM 24.90</td><td><span class="tag warning">处理中</span></td></tr>
+                <tbody id="user-transactions">
+                  <tr><td colspan="5">登录后显示当前账户交易记录</td></tr>
                 </tbody>
               </table>
             </article>
