@@ -72,6 +72,7 @@ let adminUsersCache = [];
 let merchantsCache = [];
 let rechargeRequestsCache = [];
 let withdrawalRequestsCache = [];
+let refundRequestsCache = [];
 let adminTransactionsCache = [];
 let adminTransactionFilter = "all";
 
@@ -274,6 +275,8 @@ function statusTag(status) {
   if (status === "pending") return '<span class="tag warning">待审批</span>';
   if (status === "approved") return '<span class="tag success">已通过</span>';
   if (status === "rejected") return '<span class="tag danger">已拒绝</span>';
+  if (status === "refund_pending") return '<span class="tag warning">退款审批中</span>';
+  if (status === "refunded") return '<span class="tag danger">已退款</span>';
   return status === "frozen"
     ? '<span class="tag danger">已冻结</span>'
     : '<span class="tag success">正常</span>';
@@ -414,7 +417,14 @@ function renderMerchantDashboard(data = {}) {
                 <td>${formatMoney(order.amount || 0)}</td>
                 <td>钱包余额</td>
                 <td>${statusTag(order.status || "approved")}</td>
-                <td><button class="text-action merchant-order-action" data-order-id="${order.id}" data-action="view">查看</button></td>
+                <td>
+                  <button class="text-action merchant-order-action" data-order-id="${order.id}" data-action="view">查看</button>
+                  ${
+                    (order.status || "approved") === "approved"
+                      ? `<button class="text-action merchant-order-action" data-order-id="${order.id}" data-action="refund">申请退款</button>`
+                      : ""
+                  }
+                </td>
               </tr>
             `
           )
@@ -422,7 +432,12 @@ function renderMerchantDashboard(data = {}) {
       : '<tr><td colspan="6">暂无订单</td></tr>';
   }
 
-  renderList("#merchant-refunds-list", refunds, "暂无退款申请", (item) => `<li><span>${item.id}</span><strong>${formatMoney(item.amount || 0)}</strong><button>审核</button></li>`);
+  renderList(
+    "#merchant-refunds-list",
+    refunds,
+    "暂无退款申请",
+    (item) => `<li><span>${item.orderId || item.id} · ${item.status === "pending" ? "待后台审批" : item.status === "approved" ? "已退款" : "已拒绝"}</span><strong>${formatMoney(item.amount || 0)}</strong></li>`
+  );
   renderList("#merchant-settlements-list", [{ amount: settlementBalance }], "暂无待结算余额", (item) => `<li><span>待结算余额</span><strong>${formatMoney(item.amount || 0)}</strong><button id="merchant-settlement-button" type="button">申请</button></li>`);
   renderList("#merchant-transactions-list", transactions, "暂无交易记录", (item) => `<li><span>${item.type || "交易"} ${item.target || ""}</span><strong>${item.amount || "-"}</strong></li>`);
   renderList("#merchant-notifications-list", notifications, "暂无支付通知", (item) => `<li><span>${item.text}</span><strong>${item.time || "刚刚"}</strong></li>`);
@@ -448,6 +463,7 @@ async function payMerchant(merchantId, merchantName, amount) {
 
     const order = {
       id: orderId,
+      customerId: currentUser.uid,
       customer: currentUser.email,
       amount,
       status: "approved",
@@ -767,6 +783,182 @@ async function reviewWithdrawalRequest(requestId, approved) {
   loadAdminTransactions().catch(() => {});
 }
 
+function renderRefundRequests(requests = []) {
+  const body = document.querySelector("#admin-refunds-body");
+  if (!body) return;
+  if (!requests.length) {
+    body.innerHTML = '<tr><td colspan="6">暂无退款申请</td></tr>';
+    return;
+  }
+
+  body.innerHTML = requests
+    .map(
+      (request) => `
+        <tr>
+          <td>${request.orderId || request.id}</td>
+          <td>${request.merchantName || request.merchantEmail || request.merchantId || "-"}</td>
+          <td>${request.customerEmail || request.customerId || "-"}</td>
+          <td>${formatMoney(request.amount || 0)}</td>
+          <td>${statusTag(request.status || "pending")}</td>
+          <td>
+            ${
+              request.status === "pending"
+                ? `<button class="text-action refund-action" data-action="approve" data-request-id="${request.id}">通过</button>
+                   <button class="text-action refund-action" data-action="reject" data-request-id="${request.id}">拒绝</button>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadRefundRequests() {
+  const body = document.querySelector("#admin-refunds-body");
+  if (body) body.innerHTML = '<tr><td colspan="6">正在加载退款申请...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "refundRequests"));
+  refundRequestsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderRefundRequests(refundRequestsCache);
+}
+
+async function submitRefundRequest(order) {
+  if (!currentMerchant?.id) throw new Error("请先登录商家账号");
+  if (!order?.id) throw new Error("找不到订单");
+  if (!order.customerId) throw new Error("旧订单缺少用户ID，无法自动退款，请用新订单测试");
+  if ((order.status || "approved") !== "approved") throw new Error("该订单当前不能申请退款");
+
+  const requestId = `${currentMerchant.id}-${order.id}`;
+  await runTransaction(db, async (transaction) => {
+    const merchantDocRef = merchantRef();
+    const requestRef = doc(db, "refundRequests", requestId);
+    const merchantSnap = await transaction.get(merchantDocRef);
+    const requestSnap = await transaction.get(requestRef);
+    if (!merchantSnap.exists()) throw new Error("商家资料不存在");
+    if (requestSnap.exists() && requestSnap.data()?.status === "pending") throw new Error("该订单已有待审批退款申请");
+
+    const merchantData = merchantSnap.data() || {};
+    const orders = Array.isArray(merchantData.orders) ? merchantData.orders : [];
+    const latestOrder = orders.find((item) => item.id === order.id);
+    if (!latestOrder) throw new Error("找不到订单");
+    if ((latestOrder.status || "approved") !== "approved") throw new Error("该订单当前不能申请退款");
+
+    const refund = {
+      id: requestId,
+      orderId: latestOrder.id,
+      merchantId: currentMerchant.id,
+      merchantName: merchantData.businessName || currentUser.email,
+      merchantEmail: currentUser.email,
+      customerId: latestOrder.customerId,
+      customerEmail: latestOrder.customer || "",
+      amount: Number(latestOrder.amount || 0),
+      status: "pending",
+      time: "刚刚",
+      createdAt: new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    };
+    const updatedOrders = orders.map((item) => (item.id === latestOrder.id ? { ...item, status: "refund_pending" } : item));
+    const merchantRefunds = Array.isArray(merchantData.refunds) ? merchantData.refunds : [];
+
+    transaction.set(requestRef, refund, { merge: true });
+    transaction.set(
+      merchantDocRef,
+      {
+        orders: updatedOrders,
+        refunds: [refund, ...merchantRefunds.filter((item) => item.id !== requestId)].slice(0, 30),
+        notifications: [{ text: `订单 ${latestOrder.id} 已提交退款审批`, time: "刚刚" }, ...(merchantData.notifications || [])].slice(0, 20),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+}
+
+async function reviewRefundRequest(requestId, approved) {
+  const request = refundRequestsCache.find((item) => item.id === requestId);
+  if (!request) throw new Error("找不到退款申请");
+  if (request.status !== "pending") throw new Error("该退款申请已处理");
+
+  await runTransaction(db, async (transaction) => {
+    const requestRef = doc(db, "refundRequests", requestId);
+    const merchantDocRef = doc(db, "merchants", request.merchantId);
+    const userRef = doc(db, "wallets", request.customerId);
+    const requestSnap = await transaction.get(requestRef);
+    const merchantSnap = await transaction.get(merchantDocRef);
+    const userSnap = await transaction.get(userRef);
+    if (!requestSnap.exists()) throw new Error("退款申请不存在");
+    if (!merchantSnap.exists()) throw new Error("商家资料不存在");
+    if (!userSnap.exists()) throw new Error("用户钱包不存在");
+
+    const latestRequest = requestSnap.data();
+    if (latestRequest.status !== "pending") throw new Error("该退款申请已处理");
+
+    const amount = Number(latestRequest.amount || 0);
+    const merchantData = merchantSnap.data() || {};
+    const userData = userSnap.data() || {};
+    const orders = Array.isArray(merchantData.orders) ? merchantData.orders : [];
+    const refunds = Array.isArray(merchantData.refunds) ? merchantData.refunds : [];
+    const nextStatus = approved ? "approved" : "rejected";
+    const nextOrderStatus = approved ? "refunded" : "approved";
+    const refundTx = transactionItem(
+      approved ? "退款到账" : "退款拒绝",
+      latestRequest.merchantName || "商家",
+      approved ? `+ ${formatMoney(amount)}` : formatMoney(amount)
+    );
+    const merchantTx = transactionItem(
+      approved ? "退款扣减" : "退款拒绝",
+      latestRequest.customerEmail || "用户",
+      approved ? `- ${formatMoney(amount)}` : formatMoney(amount)
+    );
+
+    transaction.set(
+      requestRef,
+      {
+        status: nextStatus,
+        reviewedBy: currentUser.email,
+        reviewedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    transaction.set(
+      merchantDocRef,
+      {
+        orders: orders.map((item) => (item.id === latestRequest.orderId ? { ...item, status: nextOrderStatus } : item)),
+        refunds: refunds.map((item) => (item.id === requestId ? { ...item, status: nextStatus } : item)),
+        refundTotal: approved ? Number(merchantData.refundTotal || 0) + amount : Number(merchantData.refundTotal || 0),
+        settlementBalance: approved ? Math.max(0, Number(merchantData.settlementBalance || 0) - amount) : Number(merchantData.settlementBalance || 0),
+        transactions: [merchantTx, ...(merchantData.transactions || [])].slice(0, 30),
+        notifications: [
+          { text: `退款 ${latestRequest.orderId} ${approved ? "已通过" : "已拒绝"}`, time: "刚刚" },
+          ...(merchantData.notifications || []),
+        ].slice(0, 20),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (approved) {
+      transaction.set(
+        userRef,
+        {
+          balance: Number(userData.balance || 0) + amount,
+          transactions: [refundTx, ...(userData.transactions || [])].slice(0, 30),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  });
+
+  await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers()]);
+  loadAdminTransactions().catch(() => {});
+}
+
 async function setUserFrozen(userId, frozen) {
   await setDoc(
     doc(db, "wallets", userId),
@@ -840,11 +1032,12 @@ async function loadAdminTransactions() {
   const body = document.querySelector("#admin-transactions-body");
   if (body) body.innerHTML = '<tr><td colspan="7">正在加载交易流水...</td></tr>';
 
-  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot] = await Promise.all([
+  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot] = await Promise.all([
     getDocs(collection(db, "wallets")),
     getDocs(collection(db, "merchants")),
     getDocs(collection(db, "rechargeRequests")),
     getDocs(collection(db, "withdrawRequests")),
+    getDocs(collection(db, "refundRequests")),
   ]);
 
   const walletRows = walletSnapshot.docs.flatMap((docSnap) => {
@@ -868,8 +1061,8 @@ async function loadAdminTransactions() {
       amount: formatMoney(order.amount || 0),
       source: "商家订单",
       sourceType: "merchant",
-      status: order.status === "approved" ? "已支付" : order.status || "成功",
-      statusClass: "success",
+      status: order.status === "approved" ? "已支付" : order.status === "refund_pending" ? "退款审批中" : order.status === "refunded" ? "已退款" : order.status || "成功",
+      statusClass: order.status === "refund_pending" ? "warning" : order.status === "refunded" ? "danger" : "success",
       createdAt: order.createdAt || "",
       detail: `顾客: ${order.customer || "-"} / 商家UID: ${docSnap.id}`,
     }));
@@ -928,7 +1121,29 @@ async function loadAdminTransactions() {
     };
   });
 
-  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows, ...withdrawalRows].sort((a, b) =>
+  const refundRows = refundSnapshot.docs.map((docSnap) => {
+    const data = docSnap.data();
+    const statusMap = {
+      pending: ["待审批", "warning"],
+      approved: ["已通过", "success"],
+      rejected: ["已拒绝", "danger"],
+    };
+    const [status, statusClass] = statusMap[data.status || "pending"] || statusMap.pending;
+    return {
+      id: docSnap.id,
+      account: data.customerEmail || data.customerId,
+      type: "退款申请",
+      amount: formatMoney(data.amount || 0),
+      source: data.merchantName || data.merchantEmail || "退款审批",
+      sourceType: "refund",
+      status,
+      statusClass,
+      createdAt: data.createdAt || "",
+      detail: `订单: ${data.orderId || "-"} / 商家UID: ${data.merchantId || "-"}`,
+    };
+  });
+
+  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows, ...withdrawalRows, ...refundRows].sort((a, b) =>
     String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
   );
   renderAdminTransactions();
@@ -1081,6 +1296,7 @@ function enterRole(target) {
   if (target === "admin") loadMerchants().catch((error) => showToast(error.message || "商家数据加载失败"));
   if (target === "admin") loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
   if (target === "admin") loadWithdrawalRequests().catch((error) => showToast(error.message || "提现申请加载失败"));
+  if (target === "admin") loadRefundRequests().catch((error) => showToast(error.message || "退款申请加载失败"));
   if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
@@ -1489,6 +1705,23 @@ function handleMerchantButton(button) {
 
   if (button.classList.contains("merchant-order-action")) {
     const order = (currentMerchant?.orders || []).find((item) => item.id === button.dataset.orderId);
+    if (button.dataset.action === "refund") {
+      openDialog(
+        "申请退款",
+        `<p class="dialog-note">订单 ${order?.id || "-"} 将提交后台审批，审批通过后 ${formatMoney(order?.amount || 0)} 会退回用户钱包。</p>`,
+        "提交退款",
+        async () => {
+          try {
+            await submitRefundRequest(order);
+            closeDialog();
+            showToast("退款申请已提交后台审批");
+          } catch (error) {
+            showToast(error.message || "退款申请提交失败");
+          }
+        }
+      );
+      return;
+    }
     openDialog(
       "订单详情",
       `<div class="detail-list">
@@ -1625,6 +1858,13 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-refunds-button") {
+    loadRefundRequests()
+      .then(() => showToast("退款申请已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
     loadMerchants()
       .then(() => showToast("商家列表已刷新"))
@@ -1714,6 +1954,14 @@ function handleAdminButton(button) {
     const approved = button.dataset.action === "approve";
     reviewWithdrawalRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "提现申请已通过" : "提现申请已拒绝"))
+      .catch((error) => showToast(error.message || "审批失败"));
+    return;
+  }
+
+  if (button.classList.contains("refund-action")) {
+    const approved = button.dataset.action === "approve";
+    reviewRefundRequest(button.dataset.requestId, approved)
+      .then(() => showToast(approved ? "退款申请已通过，积分已退回用户" : "退款申请已拒绝"))
       .catch((error) => showToast(error.message || "审批失败"));
     return;
   }

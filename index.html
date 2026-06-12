@@ -244,6 +244,20 @@
                 </tbody>
               </table>
             </article>
+            <article class="table-panel" id="admin-refund-management">
+              <div class="panel-header">
+                <h2>退款审批</h2>
+                <button class="ghost-action" id="refresh-refunds-button" type="button">刷新退款</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>订单号</th><th>商家</th><th>用户</th><th>积分</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-refunds-body">
+                  <tr><td colspan="6">进入后台后加载退款申请</td></tr>
+                </tbody>
+              </table>
+            </article>
             <article class="table-panel" id="admin-transaction-management">
               <div class="panel-header">
                 <h2>交易管理</h2>
@@ -255,6 +269,7 @@
                 <button class="filter-chip transaction-filter" data-filter="merchant" type="button">商家订单</button>
                 <button class="filter-chip transaction-filter" data-filter="recharge" type="button">充值申请</button>
                 <button class="filter-chip transaction-filter" data-filter="withdrawal" type="button">提现申请</button>
+                <button class="filter-chip transaction-filter" data-filter="refund" type="button">退款申请</button>
               </div>
               <table>
                 <thead>
