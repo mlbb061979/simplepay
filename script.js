@@ -1664,7 +1664,7 @@ async function reviewRechargeRequest(requestId, approved, reviewInfo = {}) {
     );
   });
 
-  await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
+  await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
     module: "充值/提现管理",
@@ -1805,7 +1805,7 @@ async function reviewWithdrawalRequest(requestId, approved, reviewInfo = {}) {
     );
   });
 
-  await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
+  await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
     module: "充值/提现管理",
@@ -1987,7 +1987,7 @@ async function reviewRefundRequest(requestId, approved) {
     }
   });
 
-  await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
+  await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
     module: "退款管理",
@@ -2155,7 +2155,7 @@ async function reviewSettlementRequest(requestId, approved, reviewInfo = {}) {
     );
   });
 
-  await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport(), loadRiskCenter()]);
+  await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
     module: "结算管理",
@@ -2335,6 +2335,42 @@ function reviewDetail(data = {}, referenceKey = "payoutReference") {
 
 function sumApproved(docs, field = "amount") {
   return docs.reduce((total, item) => total + (item.status === "approved" ? Number(item[field] || 0) : 0), 0);
+}
+
+async function loadAdminOverview() {
+  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+    getDocs(collection(db, "wallets")),
+    getDocs(collection(db, "merchants")),
+    getDocs(collection(db, "rechargeRequests")),
+    getDocs(collection(db, "withdrawRequests")),
+    getDocs(collection(db, "refundRequests")),
+    getDocs(collection(db, "settlementRequests")),
+  ]);
+
+  const wallets = walletSnapshot.docs.map((item) => item.data());
+  const merchants = merchantSnapshot.docs.map((item) => item.data());
+  const recharges = rechargeSnapshot.docs.map((item) => item.data());
+  const withdrawals = withdrawalSnapshot.docs.map((item) => item.data());
+  const refunds = refundSnapshot.docs.map((item) => item.data());
+  const settlements = settlementSnapshot.docs.map((item) => item.data());
+  const merchantSales = merchants.reduce(
+    (total, merchant) =>
+      total +
+      (merchant.orders || [])
+        .filter((order) => (order.status || "approved") === "approved")
+        .reduce((orderTotal, order) => orderTotal + Number(order.amount || 0), 0),
+    0
+  );
+  const totalPoints =
+    sumApproved(recharges) +
+    sumApproved(withdrawals) +
+    sumApproved(refunds) +
+    sumApproved(settlements) +
+    merchantSales;
+
+  setText("#admin-total-points", formatMoney(totalPoints));
+  setText("#admin-active-users", String(wallets.filter((wallet) => (wallet.status || "active") !== "frozen").length));
+  setText("#admin-merchant-count", String(merchants.length));
 }
 
 function parseFeeRate(rate = "0.60%") {
@@ -3024,6 +3060,7 @@ function enterRole(target) {
     if (hasAdminPermission("support")) loadSupportTickets().catch((error) => showToast(error.message || "客服工单加载失败"));
     if (hasAdminPermission("config")) renderSystemConfig();
     if (hasAdminPermission("transactions")) loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
+    loadAdminOverview().catch((error) => showToast(error.message || "后台概览加载失败"));
   }
 }
 
