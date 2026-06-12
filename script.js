@@ -468,9 +468,16 @@ async function loadMerchants() {
   const body = document.querySelector("#admin-merchants-body");
   if (body) body.innerHTML = '<tr><td colspan="5">正在加载商家数据...</td></tr>';
 
-  const snapshot = await getDocs(collection(db, "merchants"));
-  merchantsCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-  renderMerchants(merchantsCache);
+  try {
+    const snapshot = await getDocs(collection(db, "merchants"));
+    merchantsCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    renderMerchants(merchantsCache);
+  } catch (error) {
+    if (body) {
+      body.innerHTML = `<tr><td colspan="5">商家数据加载失败：${error.code || error.message}</td></tr>`;
+    }
+    throw error;
+  }
 }
 
 async function ensureMerchant(user) {
