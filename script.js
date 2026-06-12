@@ -1308,6 +1308,18 @@ function renderMerchantDashboard(data = {}) {
   setText("#merchant-order-count", String(orders.length));
   setText("#merchant-refund-total", formatMoney(refundTotal));
   setText("#merchant-settlement-balance", formatMoney(settlementBalance));
+  renderList(
+    "#merchant-profile-list",
+    [
+      { label: "Business", value: data.businessName || data.displayName || "-" },
+      { label: "Contact", value: [data.contactName, data.contactPhone].filter(Boolean).join(" / ") || "-" },
+      { label: "Address", value: data.businessAddress || "-" },
+      { label: "Settlement", value: [data.settlementBank, data.settlementAccount].filter(Boolean).join(" / ") || "-" },
+      { label: "Status", value: data.status || "pending" },
+    ],
+    "No merchant profile",
+    (item) => `<li><span>${item.label}</span><strong>${item.value}</strong></li>`
+  );
 
   const qrImage = document.querySelector("#merchant-qr-image");
   const label = document.querySelector("#merchant-code-label");
@@ -1460,6 +1472,11 @@ async function ensureMerchant(user) {
     email: user.email,
     displayName: user.displayName || "",
     businessName: user.displayName ? `${user.displayName} 的商家` : "未命名商家",
+    contactName: user.displayName || "",
+    contactPhone: "",
+    businessAddress: "",
+    settlementBank: "",
+    settlementAccount: "",
     status: "pending",
     feeRate: systemConfig.merchantFeeRate || DEFAULT_SYSTEM_CONFIG.merchantFeeRate,
     totalReceived: 0,
@@ -1507,6 +1524,23 @@ async function updateMerchantStatus(merchantId, status) {
     target: merchantId,
     detail: `状态：${status}`,
   });
+}
+
+async function updateOwnMerchantProfile(profile) {
+  if (!currentUser || activeRole !== "merchant") throw new Error("Please login as merchant");
+  await setDoc(
+    merchantRef(),
+    {
+      businessName: profile.businessName,
+      contactName: profile.contactName,
+      contactPhone: profile.contactPhone,
+      businessAddress: profile.businessAddress,
+      settlementBank: profile.settlementBank,
+      settlementAccount: profile.settlementAccount,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 function renderRechargeRequests(requests = []) {
@@ -3541,6 +3575,49 @@ function handleUserButton(button) {
 
 function handleMerchantButton(button) {
   const text = button.textContent.trim();
+  if (button.id === "edit-merchant-profile-button") {
+    const data = currentMerchant || {};
+    openDialog(
+      "Merchant profile",
+      `<label class="field-label">Business name</label>
+       <input class="dialog-input" id="merchant-profile-name" value="${data.businessName || ""}" />
+       <label class="field-label">Contact name</label>
+       <input class="dialog-input" id="merchant-profile-contact" value="${data.contactName || currentUser?.displayName || ""}" />
+       <label class="field-label">Contact phone</label>
+       <input class="dialog-input" id="merchant-profile-phone" value="${data.contactPhone || ""}" />
+       <label class="field-label">Business address</label>
+       <input class="dialog-input" id="merchant-profile-address" value="${data.businessAddress || ""}" />
+       <label class="field-label">Settlement bank</label>
+       <input class="dialog-input" id="merchant-profile-bank" value="${data.settlementBank || ""}" />
+       <label class="field-label">Settlement account</label>
+       <input class="dialog-input" id="merchant-profile-account" value="${data.settlementAccount || ""}" />
+       <p class="dialog-note">These details help admin review merchant approval and settlement requests.</p>`,
+      "Save",
+      async () => {
+        const profile = {
+          businessName: document.querySelector("#merchant-profile-name")?.value.trim(),
+          contactName: document.querySelector("#merchant-profile-contact")?.value.trim(),
+          contactPhone: document.querySelector("#merchant-profile-phone")?.value.trim(),
+          businessAddress: document.querySelector("#merchant-profile-address")?.value.trim(),
+          settlementBank: document.querySelector("#merchant-profile-bank")?.value.trim(),
+          settlementAccount: document.querySelector("#merchant-profile-account")?.value.trim(),
+        };
+        if (!profile.businessName || !profile.contactName || !profile.contactPhone) {
+          showToast("Please fill business name, contact and phone");
+          return;
+        }
+        try {
+          await updateOwnMerchantProfile(profile);
+          closeDialog();
+          showToast("Merchant profile saved");
+        } catch (error) {
+          showToast(error.message || "Save failed");
+        }
+      }
+    );
+    return;
+  }
+
   if (merchantStatus !== "approved") {
     const message =
       merchantStatus === "frozen"
@@ -4080,6 +4157,9 @@ function handleAdminButton(button) {
           <p><strong>商家名称：</strong>${merchant?.businessName || "-"}</p>
           <p><strong>邮箱：</strong>${merchant?.email || "-"}</p>
           <p><strong>UID：</strong>${merchantId}</p>
+          <p><strong>联系人：</strong>${merchant?.contactName || "-"} ${merchant?.contactPhone || ""}</p>
+          <p><strong>地址：</strong>${merchant?.businessAddress || "-"}</p>
+          <p><strong>结算账户：</strong>${[merchant?.settlementBank, merchant?.settlementAccount].filter(Boolean).join(" / ") || "-"}</p>
           <p><strong>状态：</strong>${merchant?.status || "pending"}</p>
           <p><strong>费率：</strong>${merchant?.feeRate || "0.60%"}</p>
         </div>`,
