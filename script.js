@@ -70,6 +70,8 @@ let userTransactions = [];
 let adminUsersCache = [];
 let merchantsCache = [];
 let rechargeRequestsCache = [];
+let adminTransactionsCache = [];
+let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
   return `RM ${Number(amount || 0).toLocaleString("en-MY", {
@@ -634,6 +636,7 @@ async function reviewRechargeRequest(requestId, approved) {
   });
 
   await Promise.all([loadRechargeRequests(), loadAdminUsers()]);
+  loadAdminTransactions().catch(() => {});
 }
 
 async function setUserFrozen(userId, frozen) {
@@ -659,6 +662,125 @@ function transactionItem(type, target, amount) {
     statusClass: "success",
     createdAt: new Date().toISOString(),
   };
+}
+
+function normalizeTransactionRow(row) {
+  return {
+    id: row.id || `T${Date.now()}`,
+    account: row.account || "-",
+    type: row.type || "-",
+    amount: row.amount || "-",
+    source: row.source || "-",
+    status: row.status || "成功",
+    statusClass: row.statusClass || "success",
+    createdAt: row.createdAt || "",
+    detail: row.detail || "",
+  };
+}
+
+function renderAdminTransactions(filter = adminTransactionFilter) {
+  const body = document.querySelector("#admin-transactions-body");
+  if (!body) return;
+  const rows = adminTransactionsCache.filter((item) => filter === "all" || item.sourceType === filter);
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7">暂无交易流水</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows
+    .slice(0, 80)
+    .map(
+      (raw) => {
+        const row = normalizeTransactionRow(raw);
+        return `
+          <tr>
+            <td>${row.id}</td>
+            <td>${row.account}</td>
+            <td>${row.type}</td>
+            <td>${row.amount}</td>
+            <td>${row.source}</td>
+            <td><span class="tag ${row.statusClass}">${row.status}</span></td>
+            <td><button class="text-action transaction-action" data-transaction-id="${row.id}">查看</button></td>
+          </tr>
+        `;
+      }
+    )
+    .join("");
+}
+
+async function loadAdminTransactions() {
+  const body = document.querySelector("#admin-transactions-body");
+  if (body) body.innerHTML = '<tr><td colspan="7">正在加载交易流水...</td></tr>';
+
+  const [walletSnapshot, merchantSnapshot, rechargeSnapshot] = await Promise.all([
+    getDocs(collection(db, "wallets")),
+    getDocs(collection(db, "merchants")),
+    getDocs(collection(db, "rechargeRequests")),
+  ]);
+
+  const walletRows = walletSnapshot.docs.flatMap((docSnap) => {
+    const data = docSnap.data();
+    return (data.transactions || []).map((tx) => ({
+      ...tx,
+      id: tx.id || `${docSnap.id}-${tx.createdAt || Date.now()}`,
+      account: data.email || docSnap.id,
+      source: "用户钱包",
+      sourceType: "wallet",
+      detail: `UID: ${docSnap.id}`,
+    }));
+  });
+
+  const merchantRows = merchantSnapshot.docs.flatMap((docSnap) => {
+    const data = docSnap.data();
+    const orderRows = (data.orders || []).map((order) => ({
+      id: order.id,
+      account: data.businessName || data.email || docSnap.id,
+      type: "商家订单",
+      amount: formatMoney(order.amount || 0),
+      source: "商家订单",
+      sourceType: "merchant",
+      status: order.status === "approved" ? "已支付" : order.status || "成功",
+      statusClass: "success",
+      createdAt: order.createdAt || "",
+      detail: `顾客: ${order.customer || "-"} / 商家UID: ${docSnap.id}`,
+    }));
+    const txRows = (data.transactions || []).map((tx) => ({
+      ...tx,
+      id: tx.id || `${docSnap.id}-${tx.createdAt || Date.now()}`,
+      account: data.businessName || data.email || docSnap.id,
+      source: "商家流水",
+      sourceType: "merchant",
+      detail: `商家UID: ${docSnap.id}`,
+    }));
+    return [...orderRows, ...txRows];
+  });
+
+  const rechargeRows = rechargeSnapshot.docs.map((docSnap) => {
+    const data = docSnap.data();
+    const statusMap = {
+      pending: ["待审批", "warning"],
+      approved: ["已通过", "success"],
+      rejected: ["已拒绝", "danger"],
+    };
+    const [status, statusClass] = statusMap[data.status || "pending"] || statusMap.pending;
+    return {
+      id: docSnap.id,
+      account: data.email || data.userId,
+      type: "充值申请",
+      amount: formatMoney(data.amount || 0),
+      source: "充值审批",
+      sourceType: "recharge",
+      status,
+      statusClass,
+      createdAt: data.createdAt || "",
+      detail: `申请UID: ${data.userId || "-"}`,
+    };
+  });
+
+  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows].sort((a, b) =>
+    String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
+  );
+  renderAdminTransactions();
 }
 
 async function ensureWallet(user) {
@@ -807,6 +929,7 @@ function enterRole(target) {
   if (target === "admin") loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
   if (target === "admin") loadMerchants().catch((error) => showToast(error.message || "商家数据加载失败"));
   if (target === "admin") loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
+  if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
 async function logout() {
@@ -1313,6 +1436,43 @@ function handleAdminButton(button) {
     loadMerchants()
       .then(() => showToast("商家列表已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "refresh-transactions-button") {
+    loadAdminTransactions()
+      .then(() => showToast("交易流水已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.classList.contains("transaction-filter")) {
+    adminTransactionFilter = button.dataset.filter || "all";
+    document.querySelectorAll(".transaction-filter").forEach((item) => item.classList.toggle("active", item === button));
+    renderAdminTransactions(adminTransactionFilter);
+    return;
+  }
+
+  if (button.classList.contains("transaction-action")) {
+    const transaction = adminTransactionsCache.find((item) => item.id === button.dataset.transactionId);
+    if (!transaction) {
+      showToast("找不到该流水");
+      return;
+    }
+    openDialog(
+      "交易详情",
+      `<div class="detail-list">
+        <p><strong>流水号：</strong>${transaction.id}</p>
+        <p><strong>账户：</strong>${transaction.account || "-"}</p>
+        <p><strong>类型：</strong>${transaction.type || "-"}</p>
+        <p><strong>金额：</strong>${transaction.amount || "-"}</p>
+        <p><strong>来源：</strong>${transaction.source || "-"}</p>
+        <p><strong>状态：</strong>${transaction.status || "成功"}</p>
+        <p><strong>详情：</strong>${transaction.detail || "-"}</p>
+      </div>`,
+      "关闭",
+      closeDialog
+    );
     return;
   }
 

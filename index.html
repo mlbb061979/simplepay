@@ -227,15 +227,23 @@
                 </tbody>
               </table>
             </article>
-            <article class="table-panel">
-              <div class="panel-header"><h2>后台交易监控</h2><button class="ghost-action">查看全部</button></div>
+            <article class="table-panel" id="admin-transaction-management">
+              <div class="panel-header">
+                <h2>交易管理</h2>
+                <button class="ghost-action" id="refresh-transactions-button" type="button">刷新流水</button>
+              </div>
+              <div class="filter-grid admin-filter-grid">
+                <button class="filter-chip transaction-filter active" data-filter="all" type="button">全部</button>
+                <button class="filter-chip transaction-filter" data-filter="wallet" type="button">用户钱包</button>
+                <button class="filter-chip transaction-filter" data-filter="merchant" type="button">商家订单</button>
+                <button class="filter-chip transaction-filter" data-filter="recharge" type="button">充值申请</button>
+              </div>
               <table>
                 <thead>
-                  <tr><th>流水号</th><th>用户/商家</th><th>类型</th><th>金额</th><th>风险</th><th>状态</th></tr>
+                  <tr><th>流水号</th><th>账户</th><th>类型</th><th>金额</th><th>来源</th><th>状态</th><th>操作</th></tr>
                 </thead>
-                <tbody>
-                  <tr><td>T202606030881</td><td>MY Coffee</td><td>QR收款</td><td>RM 880.00</td><td><span class="tag success">低</span></td><td><span class="tag success">成功</span></td></tr>
-                  <tr><td>T202606030882</td><td>U-8294</td><td>提现</td><td>RM 4,500.00</td><td><span class="tag danger">高</span></td><td><span class="tag warning">复核中</span></td></tr>
+                <tbody id="admin-transactions-body">
+                  <tr><td colspan="7">进入后台后加载交易流水</td></tr>
                 </tbody>
               </table>
             </article>
