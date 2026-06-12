@@ -100,6 +100,7 @@ let walletBalance = 0;
 let walletStatus = "active";
 let walletKycStatus = "unsubmitted";
 let usedCouponIds = [];
+let dailyUsage = { date: "", amount: 0 };
 let merchantStatus = "pending";
 let currentMerchant = null;
 let userTransactions = [];
@@ -149,6 +150,29 @@ function parseAmount(value) {
     .trim();
   const amount = Number(normalized);
   return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getDailyUsageAmount(usage = dailyUsage) {
+  return usage?.date === todayKey() ? Number(usage.amount || 0) : 0;
+}
+
+function nextDailyUsage(usage, amount) {
+  return {
+    date: todayKey(),
+    amount: getDailyUsageAmount(usage) + Math.round(Number(amount || 0)),
+  };
+}
+
+function assertDailyLimit(amount, usage = dailyUsage) {
+  const limit = Math.round(Number(systemConfig.dailyTransactionLimit || 0));
+  const nextAmount = getDailyUsageAmount(usage) + Math.round(Number(amount || 0));
+  if (limit > 0 && nextAmount > limit) {
+    throw new Error(`超过每日交易限额：今日已用 ${formatMoney(getDailyUsageAmount(usage))}，本次 ${formatMoney(amount)}，限额 ${formatMoney(limit)}`);
+  }
 }
 
 function decodeParam(value) {
@@ -1194,6 +1218,8 @@ async function payMerchant(merchantId, merchantName, amount, coupon = null) {
     if (coupon?.id && latestUsedCoupons.includes(coupon.id)) throw new Error("该优惠券已使用");
     if (payableAmount > payerBalance) throw new Error("钱包余额不足");
 
+    assertDailyLimit(payableAmount, payerData.dailyUsage);
+
     const order = {
       id: orderId,
       customerId: currentUser.uid,
@@ -1213,6 +1239,7 @@ async function payMerchant(merchantId, merchantName, amount, coupon = null) {
       payerRef,
       {
         balance: payerBalance - payableAmount,
+        dailyUsage: nextDailyUsage(payerData.dailyUsage, payableAmount),
         usedCouponIds: coupon?.id ? [coupon.id, ...latestUsedCoupons].slice(0, 100) : latestUsedCoupons,
         transactions: [payerTx, ...(payerData.transactions || [])].slice(0, 30),
         updatedAt: serverTimestamp(),
@@ -1468,7 +1495,9 @@ async function submitWithdrawalRequest(amount, bankAccount) {
   if (amount > walletBalance) throw new Error("钱包余额不足，无法提交提现申请");
 
   const requestId = `${currentUser.uid}-${Date.now()}`;
-  await setDoc(doc(db, "withdrawRequests", requestId), {
+  const requestRef = doc(db, "withdrawRequests", requestId);
+  const userWalletRef = walletRef();
+  const requestData = {
     userId: currentUser.uid,
     email: currentUser.email,
     displayName: currentUser.displayName || "",
@@ -1479,6 +1508,27 @@ async function submitWithdrawalRequest(amount, bankAccount) {
     time: "刚刚",
     createdAt: new Date().toISOString(),
     updatedAt: serverTimestamp(),
+  };
+
+  await runTransaction(db, async (transaction) => {
+    const walletSnap = await transaction.get(userWalletRef);
+    const walletData = walletSnap.data() || {};
+    const latestStatus = walletData.status || walletStatus;
+    const latestBalance = Number(walletData.balance || 0);
+
+    if (latestStatus === "frozen") throw new Error("账户已被冻结，无法提交提现申请");
+    if (amount > latestBalance) throw new Error("钱包余额不足，无法提交提现申请");
+    assertDailyLimit(amount, walletData.dailyUsage);
+
+    transaction.set(requestRef, requestData);
+    transaction.set(
+      userWalletRef,
+      {
+        dailyUsage: nextDailyUsage(walletData.dailyUsage, amount),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   });
 }
 
@@ -2540,6 +2590,7 @@ async function ensureWallet(user) {
       transactions: [],
       status: "active",
       kycStatus: "unsubmitted",
+      dailyUsage: { date: todayKey(), amount: 0 },
       updatedAt: serverTimestamp(),
     });
     return;
@@ -2561,6 +2612,7 @@ async function attachWallet(user) {
     walletStatus = data.status || "active";
     updateUserKycStatus(data.kycStatus || "unsubmitted");
     usedCouponIds = Array.isArray(data.usedCouponIds) ? data.usedCouponIds : [];
+    dailyUsage = data.dailyUsage?.date === todayKey() ? data.dailyUsage : { date: todayKey(), amount: 0 };
     userTransactions = Array.isArray(data.transactions) ? data.transactions : [];
     renderUserTransactions(userTransactions);
     updateReceiveQr(data.receiveCode || createReceiveCode(user));
@@ -2610,10 +2662,13 @@ async function transferToUser(recipientUserId, recipientName, amount) {
     const recipientBalance = Number(recipientData.balance || 0);
     if (amount > payerBalance) throw new Error("钱包余额不足");
 
+    assertDailyLimit(amount, payerData.dailyUsage);
+
     transaction.set(
       payerRef,
       {
         balance: payerBalance - amount,
+        dailyUsage: nextDailyUsage(payerData.dailyUsage, amount),
         transactions: [payerTx, ...(payerData.transactions || [])].slice(0, 30),
         updatedAt: serverTimestamp(),
       },
@@ -2941,6 +2996,13 @@ async function confirmScanPayment() {
   }
 
   try {
+    assertDailyLimit(kind === "receive" ? amount : payableAmount);
+  } catch (error) {
+    showToast(error.message || "已超过每日交易限额");
+    return;
+  }
+
+  try {
     if (kind === "receive" && recipientUserId) {
       if (recipientUserId === currentUser.uid) {
         showToast("不能付款给自己的收款码");
@@ -2957,14 +3019,17 @@ async function confirmScanPayment() {
         const transactions = [transactionItem("扫码付款", merchant, txText), ...userTransactions].slice(0, 30);
         const nextUsedCoupons = selectedCoupon ? [selectedCoupon.id, ...usedCouponIds].slice(0, 100) : usedCouponIds;
         const nextBalance = Math.max(0, walletBalance - payableAmount);
+        const updatedDailyUsage = nextDailyUsage(dailyUsage, payableAmount);
         setWalletBalance(nextBalance);
         usedCouponIds = nextUsedCoupons;
+        dailyUsage = updatedDailyUsage;
         renderUserTransactions(transactions);
         renderUserMarketing(marketingItemsCache);
         await setDoc(
           walletRef(),
           {
             balance: nextBalance,
+            dailyUsage: updatedDailyUsage,
             usedCouponIds: nextUsedCoupons,
             transactions,
             updatedAt: serverTimestamp(),
