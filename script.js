@@ -118,6 +118,7 @@ let auditLogsCache = [];
 let marketingItemsCache = [];
 let supportTicketsCache = [];
 let systemConfig = { ...DEFAULT_SYSTEM_CONFIG };
+let userTransactionFilter = "all";
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
@@ -129,6 +130,46 @@ function formatRM(amount) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function csvCell(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportMerchantOrdersCsv() {
+  const orders = Array.isArray(currentMerchant?.orders) ? currentMerchant.orders : [];
+  if (!orders.length) {
+    showToast("暂无订单可导出");
+    return;
+  }
+  const rows = [
+    ["订单号", "顾客", "积分", "原始积分", "优惠积分", "优惠券", "状态", "创建时间"],
+    ...orders.map((order) => [
+      order.id || "",
+      order.customer || order.customerId || "",
+      Math.round(Number(order.amount || 0)),
+      Math.round(Number(order.originalAmount || order.amount || 0)),
+      Math.round(Number(order.discount || 0)),
+      order.couponTitle || order.couponId || "",
+      order.status || "",
+      order.createdAt || "",
+    ]),
+  ];
+  downloadCsv(`merchant-orders-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+  showToast("订单 CSV 已导出");
 }
 
 function myrToPoints(amount) {
@@ -451,14 +492,26 @@ function emptyTransactionRow(message) {
   userTransactionsBody.innerHTML = `<tr><td colspan="5">${message}</td></tr>`;
 }
 
+function userTransactionMatchesFilter(item, filter = userTransactionFilter) {
+  if (filter === "all") return true;
+  const type = String(item.type || "");
+  const amount = String(item.amount || "").trim();
+  const text = `${type} ${item.target || ""} ${amount}`;
+  if (filter === "refund") return text.includes("退款") || text.includes("閫€娆");
+  if (filter === "receive") return amount.startsWith("+") || text.includes("收款") || text.includes("充值") || text.includes("鏀舵") || text.includes("鍏呭€");
+  if (filter === "payment") return amount.startsWith("-") || text.includes("付款") || text.includes("支付") || text.includes("提现") || text.includes("浠樻") || text.includes("鎻愮幇");
+  return true;
+}
+
 function renderUserTransactions(transactions = []) {
   if (!userTransactionsBody) return;
-  if (!transactions.length) {
+  const visibleTransactions = transactions.filter((item) => userTransactionMatchesFilter(item));
+  if (!visibleTransactions.length) {
     emptyTransactionRow("当前账户暂无交易记录");
     return;
   }
 
-  userTransactionsBody.innerHTML = transactions
+  userTransactionsBody.innerHTML = visibleTransactions
     .slice(0, 30)
     .map(
       (item) => `
@@ -3259,6 +3312,27 @@ function handleUserButton(button) {
     return;
   }
 
+  if (button.closest(".table-panel")) {
+    openDialog(
+      "Filter transactions",
+      `<label class="field-label">Transaction type</label>
+       <select class="dialog-input" id="user-transaction-filter">
+         <option value="all" ${userTransactionFilter === "all" ? "selected" : ""}>All</option>
+         <option value="payment" ${userTransactionFilter === "payment" ? "selected" : ""}>Payment / withdraw</option>
+         <option value="receive" ${userTransactionFilter === "receive" ? "selected" : ""}>Receive / recharge</option>
+         <option value="refund" ${userTransactionFilter === "refund" ? "selected" : ""}>Refund</option>
+       </select>`,
+      "Apply",
+      () => {
+        userTransactionFilter = document.querySelector("#user-transaction-filter")?.value || "all";
+        renderUserTransactions(userTransactions);
+        closeDialog();
+        showToast("Transaction filter applied");
+      }
+    );
+    return;
+  }
+
   if (text.includes("筛选")) {
     openDialog(
       "筛选交易记录",
@@ -3288,6 +3362,11 @@ function handleMerchantButton(button) {
           ? "商家入驻已被拒绝，无法操作"
           : "商家资料待后台审核，通过后才能操作";
     showToast(message);
+    return;
+  }
+
+  if (button.classList.contains("ghost-action") && button.closest(".table-panel")) {
+    exportMerchantOrdersCsv();
     return;
   }
 
