@@ -1574,7 +1574,7 @@ function renderRechargeRequests(requests = []) {
         <tr>
           <td>${request.email || request.userId}</td>
           <td>${formatMoney(request.amount || 0)}<br><small>${formatRM(request.myrAmount || pointsToMyr(request.amount || 0))}</small></td>
-          <td>${request.time || "-"}<br><small>${request.payoutReference || request.reviewNote || "-"}</small></td>
+          <td>${request.time || "-"}<br><small>${request.paymentReference || request.reviewNote || "-"}</small></td>
           <td>${statusTag(request.status || "pending")}</td>
           <td>
             ${
@@ -1618,7 +1618,7 @@ async function submitRechargeRequest(amount) {
   });
 }
 
-async function reviewRechargeRequest(requestId, approved) {
+async function reviewRechargeRequest(requestId, approved, reviewInfo = {}) {
   const request = rechargeRequestsCache.find((item) => item.id === requestId);
   if (!request) throw new Error("找不到充值申请");
   if (request.status !== "pending") throw new Error("该申请已处理");
@@ -1645,23 +1645,23 @@ async function reviewRechargeRequest(requestId, approved) {
       requestRef,
       {
         status: approved ? "approved" : "rejected",
+        paymentReference: approved ? reviewInfo.paymentReference || "" : "",
+        reviewNote: reviewInfo.reviewNote || "",
         reviewedBy: currentUser.email,
         reviewedAt: serverTimestamp(),
       },
       { merge: true }
     );
 
-    if (approved) {
-      transaction.set(
-        userRef,
-        {
-          balance: Number(userData.balance || 0) + Number(latestRequest.amount || 0),
-          transactions: [tx, ...(userData.transactions || [])].slice(0, 30),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
+    transaction.set(
+      userRef,
+      {
+        balance: approved ? Number(userData.balance || 0) + Number(latestRequest.amount || 0) : Number(userData.balance || 0),
+        transactions: [tx, ...(userData.transactions || [])].slice(0, 30),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   });
 
   await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
@@ -1670,7 +1670,7 @@ async function reviewRechargeRequest(requestId, approved) {
     module: "充值/提现管理",
     action: approved ? "通过充值申请" : "拒绝充值申请",
     target: requestId,
-    detail: `${request.email || request.userId} / ${formatMoney(request.amount || 0)}`,
+    detail: `${request.email || request.userId} / ${formatMoney(request.amount || 0)} / ${reviewInfo.paymentReference || reviewInfo.reviewNote || "-"}`,
   });
 }
 
@@ -4225,9 +4225,39 @@ function handleAdminButton(button) {
   if (button.classList.contains("recharge-action")) {
     if (!requireAdminPermission("funds")) return;
     const approved = button.dataset.action === "approve";
-    reviewRechargeRequest(button.dataset.requestId, approved)
-      .then(() => showToast(approved ? "充值申请已通过" : "充值申请已拒绝"))
-      .catch((error) => showToast(error.message || "审批失败"));
+    const request = rechargeRequestsCache.find((item) => item.id === button.dataset.requestId);
+    openDialog(
+      approved ? "Approve recharge" : "Reject recharge",
+      `<p class="dialog-note">${request?.email || request?.userId || "-"} / ${formatMoney(request?.amount || 0)} / ${formatRM(request?.myrAmount || pointsToMyr(request?.amount || 0))}</p>
+       ${
+         approved
+           ? `<label class="field-label">Payment reference</label>
+              <input class="dialog-input" id="recharge-payment-reference" placeholder="Bank / payment receipt reference" />`
+           : ""
+       }
+       <label class="field-label">${approved ? "Review note" : "Reject reason"}</label>
+       <input class="dialog-input" id="recharge-review-note" placeholder="${approved ? "Optional note" : "Reason for rejection"}" />`,
+      approved ? "Approve" : "Reject",
+      async () => {
+        const paymentReference = document.querySelector("#recharge-payment-reference")?.value.trim() || "";
+        const reviewNote = document.querySelector("#recharge-review-note")?.value.trim() || "";
+        if (approved && !paymentReference) {
+          showToast("Please enter payment reference");
+          return;
+        }
+        if (!approved && !reviewNote) {
+          showToast("Please enter reject reason");
+          return;
+        }
+        try {
+          await reviewRechargeRequest(button.dataset.requestId, approved, { paymentReference, reviewNote });
+          closeDialog();
+          showToast(approved ? "Recharge approved" : "Recharge rejected");
+        } catch (error) {
+          showToast(error.message || "Recharge review failed");
+        }
+      }
+    );
     return;
   }
 
