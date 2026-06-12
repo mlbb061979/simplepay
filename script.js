@@ -958,8 +958,17 @@ function renderUserTickets(tickets = []) {
   renderList(
     "#user-ticket-list",
     ownTickets,
-    "暂无客服工单",
-    (ticket) => `<li><span>${ticketTypeLabel(ticket.type)} · ${ticket.title}</span><strong>${ticket.status === "closed" ? "已关闭" : ticket.status === "processing" ? "处理中" : "待处理"}</strong></li>`
+    "No support tickets",
+    (ticket) => {
+      const statusText = ticket.status === "closed" ? "Closed" : ticket.status === "processing" ? "Processing" : "Open";
+      const replyButton = ticket.status === "closed" ? "" : `<button class="text-action user-ticket-action" data-action="reply" data-ticket-id="${ticket.id}" type="button">Reply</button>`;
+      return `<li>
+        <span>${ticketTypeLabel(ticket.type)} - ${ticket.title}</span>
+        <strong>${statusText}</strong>
+        <button class="text-action user-ticket-action" data-action="view" data-ticket-id="${ticket.id}" type="button">View</button>
+        ${replyButton}
+      </li>`;
+    }
   );
 }
 
@@ -1046,6 +1055,32 @@ async function updateSupportTicket(ticketId, patch, auditAction = "更新客服�
     target: ticketId,
     detail: ticket?.title || "-",
   });
+  await loadSupportTickets();
+}
+
+async function addUserSupportReply(ticket, message) {
+  if (!ticket || ticket.userId !== currentUser?.uid) throw new Error("Ticket not found");
+  if (ticket.status === "closed") throw new Error("This ticket is already closed");
+  const replies = [
+    ...(ticket.replies || []),
+    {
+      by: currentUser.email,
+      role: "user",
+      text: message,
+      time: "just now",
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  await setDoc(
+    doc(db, "supportTickets", ticket.id),
+    {
+      status: ticket.status === "open" ? "open" : "processing",
+      replies,
+      lastReplyBy: currentUser.email,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
   await loadSupportTickets();
 }
 
@@ -3206,6 +3241,56 @@ async function confirmScanPayment() {
 
 function handleUserButton(button) {
   const text = button.textContent.trim();
+  if (button.classList.contains("user-ticket-action")) {
+    const ticket = supportTicketsCache.find((item) => item.id === button.dataset.ticketId && item.userId === currentUser?.uid);
+    if (!ticket) {
+      showToast("Ticket not found");
+      return;
+    }
+    const replies = (ticket.replies || []).map((reply) => `<p><strong>${reply.by || reply.role || "-"}:</strong> ${reply.text || ""}</p>`).join("") || "<p>No replies yet</p>";
+    if (button.dataset.action === "view") {
+      openDialog(
+        "Support ticket",
+        `<div class="detail-list">
+          <p><strong>ID:</strong> ${ticket.id}</p>
+          <p><strong>Type:</strong> ${ticketTypeLabel(ticket.type)}</p>
+          <p><strong>Title:</strong> ${ticket.title || "-"}</p>
+          <p><strong>Status:</strong> ${ticket.status || "open"}</p>
+          <p><strong>Message:</strong> ${ticket.message || "-"}</p>
+          <div>${replies}</div>
+        </div>`,
+        "Close",
+        closeDialog
+      );
+      return;
+    }
+    if (button.dataset.action === "reply") {
+      openDialog(
+        "Reply ticket",
+        `<p class="dialog-note">${ticket.title || ticket.id}</p>
+         <div class="detail-list">${replies}</div>
+         <label class="field-label">Message</label>
+         <input class="dialog-input" id="user-ticket-reply" placeholder="Type your follow-up message" />`,
+        "Send",
+        async () => {
+          const message = document.querySelector("#user-ticket-reply")?.value.trim();
+          if (!message) {
+            showToast("Please enter a message");
+            return;
+          }
+          try {
+            await addUserSupportReply(ticket, message);
+            closeDialog();
+            showToast("Reply sent");
+          } catch (error) {
+            showToast(error.message || "Reply failed");
+          }
+        }
+      );
+      return;
+    }
+  }
+
   if (button.id === "refresh-user-marketing-button") {
     loadMarketingItems()
       .then(() => showToast("公告与优惠券已刷新"))
