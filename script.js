@@ -1574,7 +1574,7 @@ function renderRechargeRequests(requests = []) {
         <tr>
           <td>${request.email || request.userId}</td>
           <td>${formatMoney(request.amount || 0)}<br><small>${formatRM(request.myrAmount || pointsToMyr(request.amount || 0))}</small></td>
-          <td>${request.time || "-"}</td>
+          <td>${request.time || "-"}<br><small>${request.payoutReference || request.reviewNote || "-"}</small></td>
           <td>${statusTag(request.status || "pending")}</td>
           <td>
             ${
@@ -2089,7 +2089,7 @@ async function submitSettlementRequest(amount) {
   });
 }
 
-async function reviewSettlementRequest(requestId, approved) {
+async function reviewSettlementRequest(requestId, approved, reviewInfo = {}) {
   const request = settlementRequestsCache.find((item) => item.id === requestId);
   if (!request) throw new Error("找不到结算申请");
   if (request.status !== "pending") throw new Error("该结算申请已处理");
@@ -2119,6 +2119,8 @@ async function reviewSettlementRequest(requestId, approved) {
       requestRef,
       {
         status: nextStatus,
+        payoutReference: approved ? reviewInfo.payoutReference || "" : "",
+        reviewNote: reviewInfo.reviewNote || "",
         reviewedBy: currentUser.email,
         reviewedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -2132,7 +2134,16 @@ async function reviewSettlementRequest(requestId, approved) {
         settlementBalance: approved
           ? Number(merchantData.settlementBalance || 0)
           : Number(merchantData.settlementBalance || 0) + amount,
-        settlements: settlements.map((item) => (item.id === requestId ? { ...item, status: nextStatus } : item)),
+        settlements: settlements.map((item) =>
+          item.id === requestId
+            ? {
+                ...item,
+                status: nextStatus,
+                payoutReference: approved ? reviewInfo.payoutReference || "" : "",
+                reviewNote: reviewInfo.reviewNote || "",
+              }
+            : item
+        ),
         transactions: [merchantTx, ...(merchantData.transactions || [])].slice(0, 30),
         notifications: [
           { text: `结算 ${requestId} ${approved ? "已通过" : "已拒绝，积分已退回待结算"}`, time: "刚刚" },
@@ -2150,7 +2161,7 @@ async function reviewSettlementRequest(requestId, approved) {
     module: "结算管理",
     action: approved ? "通过结算申请" : "拒绝结算申请",
     target: requestId,
-    detail: `${request.merchantName || request.merchantId} / ${formatMoney(request.amount || 0)}`,
+    detail: `${request.merchantName || request.merchantId} / ${formatMoney(request.amount || 0)} / ${reviewInfo.payoutReference || reviewInfo.reviewNote || "-"}`,
   });
 }
 
@@ -4241,9 +4252,40 @@ function handleAdminButton(button) {
   if (button.classList.contains("settlement-action")) {
     if (!requireAdminPermission("settlements")) return;
     const approved = button.dataset.action === "approve";
-    reviewSettlementRequest(button.dataset.requestId, approved)
-      .then(() => showToast(approved ? "结算申请已通过" : "结算申请已拒绝，积分已退回待结算"))
-      .catch((error) => showToast(error.message || "审批失败"));
+    const request = settlementRequestsCache.find((item) => item.id === button.dataset.requestId);
+    openDialog(
+      approved ? "Approve settlement" : "Reject settlement",
+      `<p class="dialog-note">${request?.merchantName || request?.merchantEmail || request?.merchantId || "-"} / ${formatMoney(request?.amount || 0)} / ${formatRM(pointsToMyr(request?.amount || 0))}</p>
+       <p class="dialog-note">Settlement account: ${[request?.settlementBank, request?.settlementAccount].filter(Boolean).join(" / ") || "-"}</p>
+       ${
+         approved
+           ? `<label class="field-label">Payout reference</label>
+              <input class="dialog-input" id="settlement-payout-reference" placeholder="Bank transfer reference" />`
+           : ""
+       }
+       <label class="field-label">${approved ? "Review note" : "Reject reason"}</label>
+       <input class="dialog-input" id="settlement-review-note" placeholder="${approved ? "Optional note" : "Reason for rejection"}" />`,
+      approved ? "Approve" : "Reject",
+      async () => {
+        const payoutReference = document.querySelector("#settlement-payout-reference")?.value.trim() || "";
+        const reviewNote = document.querySelector("#settlement-review-note")?.value.trim() || "";
+        if (approved && !payoutReference) {
+          showToast("Please enter payout reference");
+          return;
+        }
+        if (!approved && !reviewNote) {
+          showToast("Please enter reject reason");
+          return;
+        }
+        try {
+          await reviewSettlementRequest(button.dataset.requestId, approved, { payoutReference, reviewNote });
+          closeDialog();
+          showToast(approved ? "Settlement approved" : "Settlement rejected");
+        } catch (error) {
+          showToast(error.message || "Settlement review failed");
+        }
+      }
+    );
     return;
   }
 
