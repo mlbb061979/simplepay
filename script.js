@@ -99,6 +99,7 @@ let toastTimer;
 let walletBalance = 0;
 let walletStatus = "active";
 let walletKycStatus = "unsubmitted";
+let usedCouponIds = [];
 let merchantStatus = "pending";
 let currentMerchant = null;
 let userTransactions = [];
@@ -605,14 +606,41 @@ function marketingTypeLabel(type) {
   return labels[type] || type || "-";
 }
 
+function isMarketingItemValid(item) {
+  if (!item?.validUntil) return true;
+  const end = new Date(`${item.validUntil}T23:59:59`);
+  return Number.isNaN(end.getTime()) || end >= new Date();
+}
+
 function renderUserMarketing(items = []) {
-  const visibleItems = items.filter((item) => item.status === "published");
+  const visibleItems = items.filter(
+    (item) => item.status === "published" && isMarketingItemValid(item) && (item.type !== "coupon" || !usedCouponIds.includes(item.id))
+  );
   renderList(
     "#user-marketing-list",
     visibleItems,
     "暂无公告或优惠券",
-    (item) => `<li><span>${marketingTypeLabel(item.type)} · ${item.title}</span><strong>${item.type === "coupon" ? formatMoney(item.discount || 0) : item.badge || "查看"}</strong></li>`
+    (item) => `<li><span>${marketingTypeLabel(item.type)} · ${item.title}</span><strong>${item.type === "coupon" ? `可抵 ${formatMoney(item.discount || 0)}` : item.badge || "查看"}</strong></li>`
   );
+}
+
+function getAvailableCoupons() {
+  return marketingItemsCache.filter(
+    (item) => item.type === "coupon" && item.status === "published" && isMarketingItemValid(item) && !usedCouponIds.includes(item.id)
+  );
+}
+
+function couponSelectMarkup() {
+  const coupons = getAvailableCoupons();
+  if (!coupons.length) {
+    return `<label class="field-label">优惠券</label>
+      <select class="dialog-input" id="pay-coupon" disabled><option value="">暂无可用优惠券</option></select>`;
+  }
+  return `<label class="field-label">优惠券</label>
+    <select class="dialog-input" id="pay-coupon">
+      <option value="">不使用优惠券</option>
+      ${coupons.map((item) => `<option value="${item.id}">${item.title}：抵扣 ${formatMoney(item.discount || 0)}</option>`).join("")}
+    </select>`;
 }
 
 function renderMarketingItems(items = []) {
@@ -1143,11 +1171,14 @@ function renderMerchantDashboard(data = {}) {
   renderList("#merchant-notifications-list", notifications, "暂无支付通知", (item) => `<li><span>${item.text}</span><strong>${item.time || "刚刚"}</strong></li>`);
 }
 
-async function payMerchant(merchantId, merchantName, amount) {
+async function payMerchant(merchantId, merchantName, amount, coupon = null) {
   const payerRef = walletRef();
   const merchantDocRef = doc(db, "merchants", merchantId);
   const orderId = `M${Date.now()}`;
-  const payerTx = transactionItem("商家付款", merchantName, `- ${formatMoney(amount)}`);
+  const discount = Math.min(Number(coupon?.discount || 0), amount);
+  const payableAmount = Math.max(0, amount - discount);
+  const couponText = coupon ? `，优惠 ${formatMoney(discount)}` : "";
+  const payerTx = transactionItem("商家付款", merchantName, `- ${formatMoney(payableAmount)}${couponText}`);
 
   await runTransaction(db, async (transaction) => {
     const payerSnap = await transaction.get(payerRef);
@@ -1159,23 +1190,30 @@ async function payMerchant(merchantId, merchantName, amount) {
     if (merchantData.status !== "approved") throw new Error("商家未通过审核，无法收款");
 
     const payerBalance = Number(payerData.balance || 0);
-    if (amount > payerBalance) throw new Error("钱包余额不足");
+    const latestUsedCoupons = Array.isArray(payerData.usedCouponIds) ? payerData.usedCouponIds : [];
+    if (coupon?.id && latestUsedCoupons.includes(coupon.id)) throw new Error("该优惠券已使用");
+    if (payableAmount > payerBalance) throw new Error("钱包余额不足");
 
     const order = {
       id: orderId,
       customerId: currentUser.uid,
       customer: currentUser.email,
-      amount,
+      amount: payableAmount,
+      originalAmount: amount,
+      discount,
+      couponId: coupon?.id || "",
+      couponTitle: coupon?.title || "",
       status: "approved",
       createdAt: new Date().toISOString(),
     };
-    const merchantTx = transactionItem("QR收款", currentUser.email, `+ ${formatMoney(amount)}`);
-    const notification = { text: `订单 ${orderId} 支付成功`, time: "刚刚", createdAt: new Date().toISOString() };
+    const merchantTx = transactionItem("QR收款", currentUser.email, `+ ${formatMoney(payableAmount)}`);
+    const notification = { text: `订单 ${orderId} 支付成功${coupon ? `，优惠 ${formatMoney(discount)}` : ""}`, time: "刚刚", createdAt: new Date().toISOString() };
 
     transaction.set(
       payerRef,
       {
-        balance: payerBalance - amount,
+        balance: payerBalance - payableAmount,
+        usedCouponIds: coupon?.id ? [coupon.id, ...latestUsedCoupons].slice(0, 100) : latestUsedCoupons,
         transactions: [payerTx, ...(payerData.transactions || [])].slice(0, 30),
         updatedAt: serverTimestamp(),
       },
@@ -1184,8 +1222,8 @@ async function payMerchant(merchantId, merchantName, amount) {
     transaction.set(
       merchantDocRef,
       {
-        totalReceived: Number(merchantData.totalReceived || 0) + amount,
-        settlementBalance: Number(merchantData.settlementBalance || 0) + amount,
+        totalReceived: Number(merchantData.totalReceived || 0) + payableAmount,
+        settlementBalance: Number(merchantData.settlementBalance || 0) + payableAmount,
         orders: [order, ...(merchantData.orders || [])].slice(0, 50),
         transactions: [merchantTx, ...(merchantData.transactions || [])].slice(0, 30),
         notifications: [notification, ...(merchantData.notifications || [])].slice(0, 20),
@@ -2522,9 +2560,11 @@ async function attachWallet(user) {
     setWalletBalance(data.balance || 0);
     walletStatus = data.status || "active";
     updateUserKycStatus(data.kycStatus || "unsubmitted");
+    usedCouponIds = Array.isArray(data.usedCouponIds) ? data.usedCouponIds : [];
     userTransactions = Array.isArray(data.transactions) ? data.transactions : [];
     renderUserTransactions(userTransactions);
     updateReceiveQr(data.receiveCode || createReceiveCode(user));
+    renderUserMarketing(marketingItemsCache);
   });
 }
 
@@ -2879,6 +2919,10 @@ async function confirmScanPayment() {
   const merchant = document.querySelector("#pay-merchant").value || "商家";
   if (amountInput && !amountInput.value && amountBeforeParse) amountInput.value = amountBeforeParse;
   const amount = parseAmount(amountInput?.value || amountBeforeParse);
+  const couponId = document.querySelector("#pay-coupon")?.value || "";
+  const selectedCoupon = getAvailableCoupons().find((item) => item.id === couponId) || null;
+  const couponDiscount = selectedCoupon ? Math.min(Number(selectedCoupon.discount || 0), amount || 0) : 0;
+  const payableAmount = Math.max(0, Number(amount || 0) - couponDiscount);
   const recipientUserId = codeInput?.dataset.recipientUserId;
   const kind = codeInput?.dataset.kind;
 
@@ -2887,7 +2931,11 @@ async function confirmScanPayment() {
     amountInput?.focus();
     return;
   }
-  if (amount > walletBalance) {
+  if (kind === "receive" && selectedCoupon) {
+    showToast("优惠券只能用于商家付款，不能用于个人转账");
+    return;
+  }
+  if (payableAmount > walletBalance) {
     showToast("钱包余额不足");
     return;
   }
@@ -2903,11 +2951,28 @@ async function confirmScanPayment() {
     } else {
       const merchantId = manualPayment?.merchantId || codeInput?.dataset.merchantId;
       if (merchantId) {
-        await payMerchant(merchantId, merchant, amount);
+        await payMerchant(merchantId, merchant, amount, selectedCoupon);
       } else {
-        await updateWalletBalance(-amount, transactionItem("扫码付款", merchant, `- ${formatMoney(amount)}`));
+        const txText = selectedCoupon ? `- ${formatMoney(payableAmount)}，优惠 ${formatMoney(couponDiscount)}` : `- ${formatMoney(amount)}`;
+        const transactions = [transactionItem("扫码付款", merchant, txText), ...userTransactions].slice(0, 30);
+        const nextUsedCoupons = selectedCoupon ? [selectedCoupon.id, ...usedCouponIds].slice(0, 100) : usedCouponIds;
+        const nextBalance = Math.max(0, walletBalance - payableAmount);
+        setWalletBalance(nextBalance);
+        usedCouponIds = nextUsedCoupons;
+        renderUserTransactions(transactions);
+        renderUserMarketing(marketingItemsCache);
+        await setDoc(
+          walletRef(),
+          {
+            balance: nextBalance,
+            usedCouponIds: nextUsedCoupons,
+            transactions,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
       }
-      showToast(`付款成功，余额已扣除 ${formatMoney(amount)}`);
+      showToast(selectedCoupon ? `付款成功，原价 ${formatMoney(amount)}，优惠 ${formatMoney(couponDiscount)}，实付 ${formatMoney(payableAmount)}` : `付款成功，余额已扣除 ${formatMoney(amount)}`);
     }
     closeDialog();
   } catch (error) {
@@ -3111,7 +3176,8 @@ function handleUserButton(button) {
        <label class="field-label">对象</label>
        <input class="dialog-input" id="pay-merchant" value="" placeholder="扫码后自动填入" />
        <label class="field-label">付款积分</label>
-       <input class="dialog-input" id="pay-amount" value="" placeholder="请输入积分" />`,
+       <input class="dialog-input" id="pay-amount" value="" placeholder="请输入积分" />
+       ${couponSelectMarkup()}`,
       "确认付款",
       confirmScanPayment
     );
