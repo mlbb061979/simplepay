@@ -66,10 +66,11 @@ const ADMIN_MODULES = {
   kyc: "实名认证/KYC 审核",
   permissions: "权限管理",
   logs: "操作日志",
+  marketing: "公告/活动/优惠券管理",
 };
 const ADMIN_ROLE_PRESETS = {
   owner: Object.keys(ADMIN_MODULES),
-  ops: ["users", "merchants", "transactions", "funds", "refunds", "settlements", "kyc"],
+  ops: ["users", "merchants", "transactions", "funds", "refunds", "settlements", "kyc", "marketing"],
   finance: ["transactions", "funds", "refunds", "settlements", "finance"],
   risk: ["users", "transactions", "risk", "kyc"],
   support: ["users", "transactions", "refunds", "kyc"],
@@ -102,6 +103,7 @@ let adminTransactionsCache = [];
 let riskAlertsCache = [];
 let permissionAdminsCache = [];
 let auditLogsCache = [];
+let marketingItemsCache = [];
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
@@ -304,6 +306,7 @@ function applyAdminPermissions() {
     "#admin-kyc-management": "kyc",
     "#admin-permission-management": "permissions",
     "#admin-audit-log": "logs",
+    "#admin-marketing-management": "marketing",
     "#admin-transaction-management": "transactions",
   };
   Object.entries(sectionPermissions).forEach(([selector, permission]) => {
@@ -520,6 +523,150 @@ function renderAuditLogs(logs = []) {
       `
     )
     .join("");
+}
+
+function marketingTypeLabel(type) {
+  const labels = { notice: "公告", campaign: "活动", coupon: "优惠券" };
+  return labels[type] || type || "-";
+}
+
+function renderUserMarketing(items = []) {
+  const visibleItems = items.filter((item) => item.status === "published");
+  renderList(
+    "#user-marketing-list",
+    visibleItems,
+    "暂无公告或优惠券",
+    (item) => `<li><span>${marketingTypeLabel(item.type)} · ${item.title}</span><strong>${item.type === "coupon" ? formatMoney(item.discount || 0) : item.badge || "查看"}</strong></li>`
+  );
+}
+
+function renderMarketingItems(items = []) {
+  const body = document.querySelector("#admin-marketing-body");
+  if (!body) return;
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="6">暂无公告活动优惠券</td></tr>';
+    return;
+  }
+
+  body.innerHTML = items
+    .map(
+      (item) => `
+        <tr>
+          <td>${item.title || "-"}</td>
+          <td>${marketingTypeLabel(item.type)}</td>
+          <td>${item.type === "coupon" ? formatMoney(item.discount || 0) : item.badge || "-"}</td>
+          <td>${item.status === "published" ? '<span class="tag success">已发布</span>' : item.status === "paused" ? '<span class="tag danger">已停用</span>' : '<span class="tag warning">草稿</span>'}</td>
+          <td>${item.validUntil || "-"}</td>
+          <td>
+            <button class="text-action marketing-action" data-action="view" data-item-id="${item.id}">查看</button>
+            ${
+              item.status === "published"
+                ? `<button class="text-action marketing-action" data-action="pause" data-item-id="${item.id}">停用</button>`
+                : `<button class="text-action marketing-action" data-action="publish" data-item-id="${item.id}">发布</button>`
+            }
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+function openMarketingEditor() {
+  openDialog(
+    "新建公告/活动/优惠券",
+    `<label class="field-label">类型</label>
+     <select class="dialog-input" id="marketing-type">
+       <option value="notice">公告</option>
+       <option value="campaign">活动</option>
+       <option value="coupon">优惠券</option>
+     </select>
+     <label class="field-label">标题</label>
+     <input class="dialog-input" id="marketing-title" placeholder="例如：周末积分返利活动" />
+     <label class="field-label">内容说明</label>
+     <input class="dialog-input" id="marketing-description" placeholder="展示给用户的说明" />
+     <label class="field-label">优惠积分</label>
+     <input class="dialog-input" id="marketing-discount" value="500" />
+     <label class="field-label">有效期</label>
+     <input class="dialog-input" id="marketing-valid-until" value="2026-12-31" />
+     <p class="dialog-note">公告和活动可把优惠积分留作标签展示；优惠券会作为用户可领取/可用金额展示。</p>`,
+    "保存草稿",
+    async () => {
+      const type = document.querySelector("#marketing-type").value;
+      const title = document.querySelector("#marketing-title").value.trim();
+      const description = document.querySelector("#marketing-description").value.trim();
+      const discount = Math.round(parseAmount(document.querySelector("#marketing-discount").value) || 0);
+      const validUntil = document.querySelector("#marketing-valid-until").value.trim();
+      if (!title || !description) {
+        showToast("请填写标题和说明");
+        return;
+      }
+      try {
+        await createMarketingItem({
+          type,
+          title,
+          description,
+          discount: type === "coupon" ? discount : 0,
+          badge: type === "coupon" ? "优惠券" : type === "campaign" ? "活动" : "公告",
+          validUntil,
+        });
+        closeDialog();
+        showToast("营销内容草稿已创建");
+      } catch (error) {
+        showToast(error.message || "创建失败");
+      }
+    }
+  );
+}
+
+async function loadMarketingItems() {
+  const body = document.querySelector("#admin-marketing-body");
+  if (body) body.innerHTML = '<tr><td colspan="6">正在加载公告活动优惠券...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "marketingItems"));
+  marketingItemsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderMarketingItems(marketingItemsCache);
+  renderUserMarketing(marketingItemsCache);
+}
+
+async function createMarketingItem(data) {
+  const itemId = `MKT${Date.now()}`;
+  await setDoc(doc(db, "marketingItems", itemId), {
+    ...data,
+    id: itemId,
+    status: "draft",
+    createdBy: currentUser.email,
+    createdAt: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
+  });
+  logAuditSafe({
+    module: "公告/活动/优惠券管理",
+    action: "新建营销内容",
+    target: itemId,
+    detail: `${marketingTypeLabel(data.type)} / ${data.title}`,
+  });
+  await loadMarketingItems();
+}
+
+async function updateMarketingStatus(itemId, status) {
+  const item = marketingItemsCache.find((entry) => entry.id === itemId);
+  await setDoc(
+    doc(db, "marketingItems", itemId),
+    {
+      status,
+      updatedBy: currentUser.email,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  logAuditSafe({
+    module: "公告/活动/优惠券管理",
+    action: status === "published" ? "发布营销内容" : "停用营销内容",
+    target: itemId,
+    detail: item?.title || "-",
+  });
+  await loadMarketingItems();
 }
 
 async function loadAuditLogs() {
@@ -2252,7 +2399,10 @@ async function loginAs(target) {
       }
     }
     enterRole(target);
-    if (target === "user") await attachWallet(currentUser);
+    if (target === "user") {
+      await attachWallet(currentUser);
+      loadMarketingItems().catch(() => {});
+    }
     if (target === "merchant") await attachMerchant(currentUser);
     if (target === "admin") {
       logAuditSafe({
@@ -2289,6 +2439,7 @@ function enterRole(target) {
     if (hasAdminPermission("kyc")) loadKycRequests().catch((error) => showToast(error.message || "实名申请加载失败"));
     if (hasAdminPermission("permissions")) loadPermissionAdmins().catch((error) => showToast(error.message || "权限数据加载失败"));
     if (hasAdminPermission("logs")) loadAuditLogs().catch((error) => showToast(error.message || "操作日志加载失败"));
+    if (hasAdminPermission("marketing")) loadMarketingItems().catch((error) => showToast(error.message || "营销内容加载失败"));
     if (hasAdminPermission("transactions")) loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
   }
 }
@@ -2548,6 +2699,13 @@ async function confirmScanPayment() {
 
 function handleUserButton(button) {
   const text = button.textContent.trim();
+  if (button.id === "refresh-user-marketing-button") {
+    loadMarketingItems()
+      .then(() => showToast("公告与优惠券已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "submit-kyc-button") {
     const currentDataNote =
       walletKycStatus === "approved"
@@ -2945,6 +3103,20 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-marketing-button") {
+    if (!requireAdminPermission("marketing")) return;
+    loadMarketingItems()
+      .then(() => showToast("公告活动优惠券已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "create-marketing-button") {
+    if (!requireAdminPermission("marketing")) return;
+    openMarketingEditor();
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
     if (!requireAdminPermission("merchants")) return;
     loadMerchants()
@@ -3015,6 +3187,36 @@ function handleAdminButton(button) {
       "关闭",
       closeDialog
     );
+    return;
+  }
+
+  if (button.classList.contains("marketing-action")) {
+    if (!requireAdminPermission("marketing")) return;
+    const item = marketingItemsCache.find((entry) => entry.id === button.dataset.itemId);
+    if (!item) {
+      showToast("找不到营销内容");
+      return;
+    }
+    const action = button.dataset.action;
+    if (action === "view") {
+      openDialog(
+        "营销内容详情",
+        `<div class="detail-list">
+          <p><strong>标题：</strong>${item.title || "-"}</p>
+          <p><strong>类型：</strong>${marketingTypeLabel(item.type)}</p>
+          <p><strong>说明：</strong>${item.description || "-"}</p>
+          <p><strong>优惠：</strong>${item.type === "coupon" ? formatMoney(item.discount || 0) : item.badge || "-"}</p>
+          <p><strong>有效期：</strong>${item.validUntil || "-"}</p>
+          <p><strong>状态：</strong>${item.status || "draft"}</p>
+        </div>`,
+        "关闭",
+        closeDialog
+      );
+      return;
+    }
+    updateMarketingStatus(item.id, action === "publish" ? "published" : "paused")
+      .then(() => showToast(action === "publish" ? "营销内容已发布" : "营销内容已停用"))
+      .catch((error) => showToast(error.message || "操作失败"));
     return;
   }
 
@@ -3278,6 +3480,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
       loadAuditLogs()
         .then(() => showToast("操作日志已打开"))
         .catch((error) => showToast(error.message || "操作日志加载失败"));
+      return;
+    }
+    if (title === "公告/活动/优惠券管理") {
+      document.querySelector("#admin-marketing-management")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadMarketingItems()
+        .then(() => showToast("营销管理已打开"))
+        .catch((error) => showToast(error.message || "营销内容加载失败"));
       return;
     }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {
