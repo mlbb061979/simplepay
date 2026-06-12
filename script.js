@@ -123,6 +123,7 @@ let supportTicketsCache = [];
 let systemConfig = { ...DEFAULT_SYSTEM_CONFIG };
 let userTransactionFilter = "all";
 let adminTransactionFilter = "all";
+let auditLogFilter = { module: "all", result: "all" };
 
 function formatMoney(amount) {
   return `${Math.round(Number(amount || 0)).toLocaleString("en-MY")} 积分`;
@@ -699,15 +700,53 @@ function auditResultTag(result) {
   return '<span class="tag danger">失败</span>';
 }
 
+function auditLogMatchesFilter(log, filter = auditLogFilter) {
+  const moduleMatch = filter.module === "all" || String(log.module || "") === filter.module;
+  const resultMatch = filter.result === "all" || String(log.result || "success") === filter.result;
+  return moduleMatch && resultMatch;
+}
+
+function getFilteredAuditLogs() {
+  return auditLogsCache.filter((log) => auditLogMatchesFilter(log));
+}
+
+function exportAuditLogsCsv() {
+  const logs = getFilteredAuditLogs();
+  if (!logs.length) {
+    showToast("No audit logs to export");
+    return;
+  }
+  downloadCsv(
+    `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`,
+    [
+      ["ID", "Time", "Actor", "Role", "Module", "Action", "Target", "Result", "Detail", "Created at"],
+      ...logs.map((log) => [
+        log.id || "",
+        log.time || "",
+        log.actor || "",
+        log.actorRole || "",
+        log.module || "",
+        log.action || "",
+        log.target || "",
+        log.result || "success",
+        log.detail || "",
+        log.createdAt || "",
+      ]),
+    ]
+  );
+  showToast("Audit CSV exported");
+}
+
 function renderAuditLogs(logs = []) {
   const body = document.querySelector("#admin-audit-body");
   if (!body) return;
-  if (!logs.length) {
+  const visibleLogs = logs.filter((log) => auditLogMatchesFilter(log));
+  if (!visibleLogs.length) {
     body.innerHTML = '<tr><td colspan="7">暂无操作日志</td></tr>';
     return;
   }
 
-  body.innerHTML = logs
+  body.innerHTML = visibleLogs
     .slice(0, 120)
     .map(
       (log) => `
@@ -3582,6 +3621,43 @@ function handleAdminButton(button) {
   if (button.id === "export-transactions-button") {
     if (!requireAdminPermission("transactions")) return;
     exportAdminTransactionsCsv();
+    return;
+  }
+
+  if (button.id === "filter-audit-button") {
+    if (!requireAdminPermission("logs")) return;
+    const modules = [...new Set(auditLogsCache.map((log) => log.module).filter(Boolean))];
+    openDialog(
+      "Filter audit logs",
+      `<label class="field-label">Module</label>
+       <select class="dialog-input" id="audit-filter-module">
+         <option value="all" ${auditLogFilter.module === "all" ? "selected" : ""}>All modules</option>
+         ${modules.map((module) => `<option value="${module}" ${auditLogFilter.module === module ? "selected" : ""}>${module}</option>`).join("")}
+       </select>
+       <label class="field-label">Result</label>
+       <select class="dialog-input" id="audit-filter-result">
+         <option value="all" ${auditLogFilter.result === "all" ? "selected" : ""}>All results</option>
+         <option value="success" ${auditLogFilter.result === "success" ? "selected" : ""}>Success</option>
+         <option value="blocked" ${auditLogFilter.result === "blocked" ? "selected" : ""}>Blocked</option>
+         <option value="failed" ${auditLogFilter.result === "failed" ? "selected" : ""}>Failed</option>
+       </select>`,
+      "Apply",
+      () => {
+        auditLogFilter = {
+          module: document.querySelector("#audit-filter-module")?.value || "all",
+          result: document.querySelector("#audit-filter-result")?.value || "all",
+        };
+        renderAuditLogs(auditLogsCache);
+        closeDialog();
+        showToast("Audit filter applied");
+      }
+    );
+    return;
+  }
+
+  if (button.id === "export-audit-button") {
+    if (!requireAdminPermission("logs")) return;
+    exportAuditLogsCsv();
     return;
   }
 
