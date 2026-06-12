@@ -112,6 +112,8 @@ let refundRequestsCache = [];
 let settlementRequestsCache = [];
 let kycRequestsCache = [];
 let adminTransactionsCache = [];
+let financeReportRowsCache = [];
+let financeReportMetricsCache = {};
 let riskAlertsCache = [];
 let permissionAdminsCache = [];
 let auditLogsCache = [];
@@ -170,6 +172,50 @@ function exportMerchantOrdersCsv() {
   ];
   downloadCsv(`merchant-orders-${new Date().toISOString().slice(0, 10)}.csv`, rows);
   showToast("订单 CSV 已导出");
+}
+
+function exportFinanceReportCsv() {
+  const rows = financeReportRowsCache || [];
+  if (!rows.length) {
+    showToast("No finance rows to export");
+    return;
+  }
+  const metrics = financeReportMetricsCache || {};
+  const csvRows = [
+    ["Section", "Points", "RM", "Count", "Note"],
+    ["Recharge total", Math.round(Number(metrics.rechargeTotal || 0)), pointsToMyr(metrics.rechargeTotal || 0), "", ""],
+    ["Withdrawal total", Math.round(Number(metrics.withdrawTotal || 0)), pointsToMyr(metrics.withdrawTotal || 0), "", ""],
+    ["Merchant sales", Math.round(Number(metrics.merchantSales || 0)), pointsToMyr(metrics.merchantSales || 0), "", ""],
+    ["Platform fee", Math.round(Number(metrics.platformFee || 0)), pointsToMyr(metrics.platformFee || 0), "", ""],
+    [],
+    ...rows.map((row) => [
+      row.name || "",
+      Math.round(Number(row.points || 0)),
+      pointsToMyr(row.points || 0),
+      row.count || 0,
+      row.note || "",
+    ]),
+  ];
+  downloadCsv(`finance-report-${new Date().toISOString().slice(0, 10)}.csv`, csvRows);
+  showToast("Finance CSV exported");
+}
+
+function exportAdminTransactionsCsv() {
+  const rows = adminTransactionsCache
+    .filter((item) => adminTransactionFilter === "all" || item.sourceType === adminTransactionFilter)
+    .map((item) => normalizeTransactionRow(item));
+  if (!rows.length) {
+    showToast("No transactions to export");
+    return;
+  }
+  downloadCsv(
+    `admin-transactions-${adminTransactionFilter}-${new Date().toISOString().slice(0, 10)}.csv`,
+    [
+      ["ID", "Account", "Type", "Amount", "Source", "Status", "Created at", "Detail"],
+      ...rows.map((row) => [row.id, row.account, row.type, row.amount, row.source, row.status, row.createdAt, row.detail]),
+    ]
+  );
+  showToast("Transaction CSV exported");
 }
 
 function myrToPoints(amount) {
@@ -2146,6 +2192,8 @@ function parseFeeRate(rate = "0.60%") {
 }
 
 function renderFinanceReport(rows = [], metrics = {}) {
+  financeReportRowsCache = rows;
+  financeReportMetricsCache = metrics;
   setText("#finance-recharge-total", formatMoney(metrics.rechargeTotal || 0));
   setText("#finance-withdraw-total", formatMoney(metrics.withdrawTotal || 0));
   setText("#finance-merchant-total", formatMoney(metrics.merchantSales || 0));
@@ -3510,6 +3558,18 @@ function handleMerchantButton(button) {
 
 function handleAdminButton(button) {
   const text = button.textContent.trim();
+  if (button.id === "export-finance-button") {
+    if (!requireAdminPermission("finance")) return;
+    exportFinanceReportCsv();
+    return;
+  }
+
+  if (button.id === "export-transactions-button") {
+    if (!requireAdminPermission("transactions")) return;
+    exportAdminTransactionsCsv();
+    return;
+  }
+
   if (button.id === "refresh-users-button") {
     if (!requireAdminPermission("users")) return;
     loadAdminUsers()

@@ -303,7 +303,10 @@
             <article class="table-panel" id="admin-finance-report">
               <div class="panel-header">
                 <h2>财务报表</h2>
-                <button class="ghost-action" id="refresh-finance-button" type="button">刷新报表</button>
+                <div>
+                  <button class="ghost-action" id="refresh-finance-button" type="button">刷新报表</button>
+                  <button class="ghost-action" id="export-finance-button" type="button">Export CSV</button>
+                </div>
               </div>
               <div class="metric-row finance-metrics">
                 <div><span>充值入金</span><strong id="finance-recharge-total">0 积分</strong></div>
@@ -453,7 +456,10 @@
             <article class="table-panel" id="admin-transaction-management">
               <div class="panel-header">
                 <h2>交易管理</h2>
-                <button class="ghost-action" id="refresh-transactions-button" type="button">刷新流水</button>
+                <div>
+                  <button class="ghost-action" id="refresh-transactions-button" type="button">刷新流水</button>
+                  <button class="ghost-action" id="export-transactions-button" type="button">Export CSV</button>
+                </div>
               </div>
               <div class="filter-grid admin-filter-grid">
                 <button class="filter-chip transaction-filter active" data-filter="all" type="button">全部</button>
