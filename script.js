@@ -594,6 +594,22 @@ function merchantStatusLabel(status) {
   return '<span class="tag warning">待审核</span>';
 }
 
+function getMissingMerchantProfileFields(merchant = {}) {
+  const requiredFields = [
+    ["businessName", "Business name"],
+    ["contactName", "Contact name"],
+    ["contactPhone", "Contact phone"],
+    ["businessAddress", "Business address"],
+    ["settlementBank", "Settlement bank"],
+    ["settlementAccount", "Settlement account"],
+  ];
+  return requiredFields.filter(([key]) => !String(merchant[key] || "").trim()).map(([, label]) => label);
+}
+
+function isMerchantProfileComplete(merchant = {}) {
+  return getMissingMerchantProfileFields(merchant).length === 0;
+}
+
 function kycStatusLabel(status) {
   if (status === "approved") return '<span class="tag success">已实名</span>';
   if (status === "pending") return '<span class="tag warning">待审核</span>';
@@ -1250,6 +1266,7 @@ function renderMerchants(merchants = []) {
   body.innerHTML = merchants
     .map((merchant) => {
       const status = merchant.status || "pending";
+      const profileComplete = isMerchantProfileComplete(merchant);
       const pendingActions =
         status === "pending"
           ? `<button class="text-action merchant-action" data-action="approve" data-merchant-id="${merchant.id}">通过</button>
@@ -1266,7 +1283,7 @@ function renderMerchants(merchants = []) {
         <tr>
           <td>${merchant.businessName || merchant.displayName || "未命名商家"}</td>
           <td>${merchant.email || "-"}</td>
-          <td>${merchantStatusLabel(status)}</td>
+          <td>${merchantStatusLabel(status)}<br><small>${profileComplete ? "Profile OK" : "Profile missing"}</small></td>
           <td>${merchant.feeRate || "0.60%"}</td>
           <td>
             <button class="text-action merchant-action" data-action="view" data-merchant-id="${merchant.id}">查看</button>
@@ -1811,7 +1828,7 @@ function renderRefundRequests(requests = []) {
       (request) => `
         <tr>
           <td>${request.orderId || request.id}</td>
-          <td>${request.merchantName || request.merchantEmail || request.merchantId || "-"}</td>
+          <td>${request.merchantName || request.merchantEmail || request.merchantId || "-"}<br><small>${[request.settlementBank, request.settlementAccount].filter(Boolean).join(" / ") || "-"}</small></td>
           <td>${request.customerEmail || request.customerId || "-"}</td>
           <td>${formatMoney(request.amount || 0)}</td>
           <td>${statusTag(request.status || "pending")}</td>
@@ -2036,6 +2053,8 @@ async function submitSettlementRequest(amount) {
 
     const merchantData = merchantSnap.data() || {};
     const currentBalance = Number(merchantData.settlementBalance || 0);
+    const missingProfile = getMissingMerchantProfileFields(merchantData);
+    if (missingProfile.length) throw new Error(`Merchant profile incomplete: ${missingProfile.join(", ")}`);
     if (currentBalance < amount) throw new Error("可结算积分不足");
 
     const settlement = {
@@ -2043,6 +2062,8 @@ async function submitSettlementRequest(amount) {
       merchantId: currentMerchant.id,
       merchantName: merchantData.businessName || currentUser.email,
       merchantEmail: currentUser.email,
+      settlementBank: merchantData.settlementBank || "",
+      settlementAccount: merchantData.settlementAccount || "",
       amount,
       myrAmount: pointsToMyr(amount),
       status: "pending",
@@ -3687,6 +3708,11 @@ function handleMerchantButton(button) {
 
   if (button.id === "merchant-settlement-button") {
     const amount = Number(currentMerchant?.settlementBalance || 0);
+    const missingProfile = getMissingMerchantProfileFields(currentMerchant || {});
+    if (missingProfile.length) {
+      showToast(`Merchant profile incomplete: ${missingProfile.join(", ")}`);
+      return;
+    }
     if (!amount) {
       showToast("当前没有可结算金额");
       return;
@@ -4175,6 +4201,10 @@ function handleAdminButton(button) {
       freeze: "frozen",
       unfreeze: "approved",
     };
+    if ((action === "approve" || action === "unfreeze") && !isMerchantProfileComplete(merchant)) {
+      showToast(`Merchant profile incomplete: ${getMissingMerchantProfileFields(merchant).join(", ")}`);
+      return;
+    }
     updateMerchantStatus(merchantId, statusMap[action])
       .then(() => showToast("商家状态已更新"))
       .catch((error) => showToast(error.message || "操作失败"));
