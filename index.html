@@ -84,7 +84,10 @@
                 <strong id="wallet-balance">RM 0.00</strong>
                 <p>今日可用额度 RM 4,000.00</p>
               </div>
-              <button class="primary-action">充值</button>
+              <div class="balance-actions">
+                <button class="primary-action">充值</button>
+                <button class="secondary-action" id="withdraw-button" type="button">提现</button>
+              </div>
             </article>
             <article class="action-panel scan-panel">
               <h2>扫码付款</h2>
@@ -227,6 +230,20 @@
                 </tbody>
               </table>
             </article>
+            <article class="table-panel" id="admin-withdraw-management">
+              <div class="panel-header">
+                <h2>提现审批</h2>
+                <button class="ghost-action" id="refresh-withdrawals-button" type="button">刷新申请</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>申请人</th><th>金额</th><th>银行卡</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-withdrawals-body">
+                  <tr><td colspan="5">进入后台后加载提现申请</td></tr>
+                </tbody>
+              </table>
+            </article>
             <article class="table-panel" id="admin-transaction-management">
               <div class="panel-header">
                 <h2>交易管理</h2>
@@ -237,6 +254,7 @@
                 <button class="filter-chip transaction-filter" data-filter="wallet" type="button">用户钱包</button>
                 <button class="filter-chip transaction-filter" data-filter="merchant" type="button">商家订单</button>
                 <button class="filter-chip transaction-filter" data-filter="recharge" type="button">充值申请</button>
+                <button class="filter-chip transaction-filter" data-filter="withdrawal" type="button">提现申请</button>
               </div>
               <table>
                 <thead>

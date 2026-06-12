@@ -99,10 +99,12 @@ h2 { font-size: 17px; }
 .balance-panel span, .balance-panel p { color: #b7d3ca; }
 .balance-panel strong { display: block; margin: 10px 0; font-size: 38px; }
 .action-panel, .table-panel, .metrics-panel, .list-panel, .module-card { padding: 20px; }
-.primary-action, .ghost-action, .text-action, .list-panel button, .google-action {
+.primary-action, .ghost-action, .text-action, .list-panel button, .google-action, .secondary-action {
   border-radius: 8px; min-height: 36px; padding: 8px 13px;
 }
 .primary-action { align-self: flex-start; background: var(--primary); color: #fff; font-weight: 700; }
+.secondary-action { border: 1px solid rgba(255,255,255,.35); background: rgba(255,255,255,.12); color: #fff; font-weight: 700; }
+.balance-actions { display: grid; align-content: start; gap: 10px; }
 .ghost-action { border: 1px solid var(--line); background: #fff; color: var(--text); }
 .text-action, .list-panel button { background: var(--surface-soft); color: var(--primary-dark); font-weight: 700; }
 .google-action {

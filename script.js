@@ -70,6 +70,7 @@ let userTransactions = [];
 let adminUsersCache = [];
 let merchantsCache = [];
 let rechargeRequestsCache = [];
+let withdrawalRequestsCache = [];
 let adminTransactionsCache = [];
 let adminTransactionFilter = "all";
 
@@ -639,6 +640,117 @@ async function reviewRechargeRequest(requestId, approved) {
   loadAdminTransactions().catch(() => {});
 }
 
+function renderWithdrawalRequests(requests = []) {
+  const body = document.querySelector("#admin-withdrawals-body");
+  if (!body) return;
+  if (!requests.length) {
+    body.innerHTML = '<tr><td colspan="5">暂无提现申请</td></tr>';
+    return;
+  }
+
+  body.innerHTML = requests
+    .map(
+      (request) => `
+        <tr>
+          <td>${request.email || request.userId}</td>
+          <td>${formatMoney(request.amount || 0)}</td>
+          <td>${request.bankAccount || "-"}</td>
+          <td>${statusTag(request.status || "pending")}</td>
+          <td>
+            ${
+              request.status === "pending"
+                ? `<button class="text-action withdrawal-action" data-action="approve" data-request-id="${request.id}">通过</button>
+                   <button class="text-action withdrawal-action" data-action="reject" data-request-id="${request.id}">拒绝</button>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadWithdrawalRequests() {
+  const body = document.querySelector("#admin-withdrawals-body");
+  if (body) body.innerHTML = '<tr><td colspan="5">正在加载提现申请...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "withdrawRequests"));
+  withdrawalRequestsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderWithdrawalRequests(withdrawalRequestsCache);
+}
+
+async function submitWithdrawalRequest(amount, bankAccount) {
+  if (walletStatus === "frozen") throw new Error("账户已被冻结，无法提交提现申请");
+  if (amount > walletBalance) throw new Error("钱包余额不足，无法提交提现申请");
+
+  const requestId = `${currentUser.uid}-${Date.now()}`;
+  await setDoc(doc(db, "withdrawRequests", requestId), {
+    userId: currentUser.uid,
+    email: currentUser.email,
+    displayName: currentUser.displayName || "",
+    amount,
+    bankAccount,
+    status: "pending",
+    time: "刚刚",
+    createdAt: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+async function reviewWithdrawalRequest(requestId, approved) {
+  const request = withdrawalRequestsCache.find((item) => item.id === requestId);
+  if (!request) throw new Error("找不到提现申请");
+  if (request.status !== "pending") throw new Error("该申请已处理");
+
+  await runTransaction(db, async (transaction) => {
+    const requestRef = doc(db, "withdrawRequests", requestId);
+    const userRef = doc(db, "wallets", request.userId);
+    const requestSnap = await transaction.get(requestRef);
+    const userSnap = await transaction.get(userRef);
+    if (!requestSnap.exists()) throw new Error("提现申请不存在");
+    if (!userSnap.exists()) throw new Error("用户钱包不存在");
+
+    const latestRequest = requestSnap.data();
+    if (latestRequest.status !== "pending") throw new Error("该申请已处理");
+    const userData = userSnap.data() || {};
+    const balance = Number(userData.balance || 0);
+    if (approved && latestRequest.amount > balance) throw new Error("用户余额不足，不能提现");
+
+    const tx = transactionItem(
+      approved ? "提现" : "提现拒绝",
+      latestRequest.bankAccount || "银行卡",
+      approved ? `- ${formatMoney(latestRequest.amount)}` : formatMoney(latestRequest.amount)
+    );
+
+    transaction.set(
+      requestRef,
+      {
+        status: approved ? "approved" : "rejected",
+        reviewedBy: currentUser.email,
+        reviewedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (approved) {
+      transaction.set(
+        userRef,
+        {
+          balance: balance - Number(latestRequest.amount || 0),
+          transactions: [tx, ...(userData.transactions || [])].slice(0, 30),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  });
+
+  await Promise.all([loadWithdrawalRequests(), loadAdminUsers()]);
+  loadAdminTransactions().catch(() => {});
+}
+
 async function setUserFrozen(userId, frozen) {
   await setDoc(
     doc(db, "wallets", userId),
@@ -712,10 +824,11 @@ async function loadAdminTransactions() {
   const body = document.querySelector("#admin-transactions-body");
   if (body) body.innerHTML = '<tr><td colspan="7">正在加载交易流水...</td></tr>';
 
-  const [walletSnapshot, merchantSnapshot, rechargeSnapshot] = await Promise.all([
+  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot] = await Promise.all([
     getDocs(collection(db, "wallets")),
     getDocs(collection(db, "merchants")),
     getDocs(collection(db, "rechargeRequests")),
+    getDocs(collection(db, "withdrawRequests")),
   ]);
 
   const walletRows = walletSnapshot.docs.flatMap((docSnap) => {
@@ -777,7 +890,29 @@ async function loadAdminTransactions() {
     };
   });
 
-  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows].sort((a, b) =>
+  const withdrawalRows = withdrawalSnapshot.docs.map((docSnap) => {
+    const data = docSnap.data();
+    const statusMap = {
+      pending: ["待审批", "warning"],
+      approved: ["已通过", "success"],
+      rejected: ["已拒绝", "danger"],
+    };
+    const [status, statusClass] = statusMap[data.status || "pending"] || statusMap.pending;
+    return {
+      id: docSnap.id,
+      account: data.email || data.userId,
+      type: "提现申请",
+      amount: formatMoney(data.amount || 0),
+      source: "提现审批",
+      sourceType: "withdrawal",
+      status,
+      statusClass,
+      createdAt: data.createdAt || "",
+      detail: `银行卡: ${data.bankAccount || "-"} / UID: ${data.userId || "-"}`,
+    };
+  });
+
+  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows, ...withdrawalRows].sort((a, b) =>
     String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
   );
   renderAdminTransactions();
@@ -929,6 +1064,7 @@ function enterRole(target) {
   if (target === "admin") loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
   if (target === "admin") loadMerchants().catch((error) => showToast(error.message || "商家数据加载失败"));
   if (target === "admin") loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
+  if (target === "admin") loadWithdrawalRequests().catch((error) => showToast(error.message || "提现申请加载失败"));
   if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
@@ -1213,6 +1349,38 @@ function handleUserButton(button) {
     return;
   }
 
+  if (button.id === "withdraw-button" || text.includes("提现")) {
+    if (walletStatus === "frozen") {
+      showToast("账户已被冻结，无法提交提现申请");
+      return;
+    }
+    openDialog(
+      "钱包提现",
+      `<label class="field-label">提现金额</label>
+       <input class="dialog-input" id="withdraw-amount" value="50.00" />
+       <label class="field-label">到账银行卡/账户</label>
+       <input class="dialog-input" id="withdraw-bank" value="Maybank **** 8821" />
+       <p class="dialog-note">提现会先提交给后台审批，审批通过后才会扣除钱包余额。</p>`,
+      "提交申请",
+      async () => {
+        const amount = parseAmount(document.querySelector("#withdraw-amount").value);
+        const bankAccount = document.querySelector("#withdraw-bank").value.trim();
+        if (!amount) {
+          showToast("请输入正确的提现金额");
+          return;
+        }
+        if (!bankAccount) {
+          showToast("请输入到账银行卡/账户");
+          return;
+        }
+        await submitWithdrawalRequest(amount, bankAccount);
+        closeDialog();
+        showToast(`提现申请已提交：${formatMoney(amount)}`);
+      }
+    );
+    return;
+  }
+
   if (text.includes("扫码")) {
     if (walletStatus === "frozen") {
       showToast("账户已被冻结，无法付款");
@@ -1432,6 +1600,13 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-withdrawals-button") {
+    loadWithdrawalRequests()
+      .then(() => showToast("提现申请已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
     loadMerchants()
       .then(() => showToast("商家列表已刷新"))
@@ -1513,6 +1688,14 @@ function handleAdminButton(button) {
     const approved = button.dataset.action === "approve";
     reviewRechargeRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "充值申请已通过" : "充值申请已拒绝"))
+      .catch((error) => showToast(error.message || "审批失败"));
+    return;
+  }
+
+  if (button.classList.contains("withdrawal-action")) {
+    const approved = button.dataset.action === "approve";
+    reviewWithdrawalRequest(button.dataset.requestId, approved)
+      .then(() => showToast(approved ? "提现申请已通过" : "提现申请已拒绝"))
       .catch((error) => showToast(error.message || "审批失败"));
     return;
   }
