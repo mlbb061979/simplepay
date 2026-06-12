@@ -53,6 +53,7 @@ const roleConfig = {
   admin: { title: "后台界面", label: "管理员 Google 账号" },
 };
 const OWNER_ADMIN_EMAIL = "stanleyhoh79@gmail.com";
+const POINTS_PER_MYR = 100;
 
 let activeRole = sessionStorage.getItem("activeRole") || "";
 let currentUser = null;
@@ -75,10 +76,22 @@ let adminTransactionsCache = [];
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
+  return `${Math.round(Number(amount || 0)).toLocaleString("en-MY")} 积分`;
+}
+
+function formatRM(amount) {
   return `RM ${Number(amount || 0).toLocaleString("en-MY", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function myrToPoints(amount) {
+  return Math.round(Number(amount || 0) * POINTS_PER_MYR);
+}
+
+function pointsToMyr(points) {
+  return Number(points || 0) / POINTS_PER_MYR;
 }
 
 function parseAmount(value) {
@@ -547,7 +560,7 @@ function renderRechargeRequests(requests = []) {
       (request) => `
         <tr>
           <td>${request.email || request.userId}</td>
-          <td>${formatMoney(request.amount || 0)}</td>
+          <td>${formatMoney(request.amount || 0)}<br><small>${formatRM(request.myrAmount || pointsToMyr(request.amount || 0))}</small></td>
           <td>${request.time || "-"}</td>
           <td>${statusTag(request.status || "pending")}</td>
           <td>
@@ -577,12 +590,14 @@ async function loadRechargeRequests() {
 
 async function submitRechargeRequest(amount) {
   if (walletStatus === "frozen") throw new Error("账户已被冻结，无法提交充值申请");
+  const pointsAmount = myrToPoints(amount);
   const requestId = `${currentUser.uid}-${Date.now()}`;
   await setDoc(doc(db, "rechargeRequests", requestId), {
     userId: currentUser.uid,
     email: currentUser.email,
     displayName: currentUser.displayName || "",
-    amount,
+    amount: pointsAmount,
+    myrAmount: amount,
     status: "pending",
     time: "刚刚",
     createdAt: new Date().toISOString(),
@@ -653,7 +668,7 @@ function renderWithdrawalRequests(requests = []) {
       (request) => `
         <tr>
           <td>${request.email || request.userId}</td>
-          <td>${formatMoney(request.amount || 0)}</td>
+          <td>${formatMoney(request.amount || 0)}<br><small>${formatRM(request.myrAmount || pointsToMyr(request.amount || 0))}</small></td>
           <td>${request.bankAccount || "-"}</td>
           <td>${statusTag(request.status || "pending")}</td>
           <td>
@@ -691,6 +706,7 @@ async function submitWithdrawalRequest(amount, bankAccount) {
     email: currentUser.email,
     displayName: currentUser.displayName || "",
     amount,
+    myrAmount: pointsToMyr(amount),
     bankAccount,
     status: "pending",
     time: "刚刚",
@@ -880,7 +896,7 @@ async function loadAdminTransactions() {
       id: docSnap.id,
       account: data.email || data.userId,
       type: "充值申请",
-      amount: formatMoney(data.amount || 0),
+      amount: `${formatMoney(data.amount || 0)} / ${formatRM(data.myrAmount || pointsToMyr(data.amount || 0))}`,
       source: "充值审批",
       sourceType: "recharge",
       status,
@@ -902,7 +918,7 @@ async function loadAdminTransactions() {
       id: docSnap.id,
       account: data.email || data.userId,
       type: "提现申请",
-      amount: formatMoney(data.amount || 0),
+      amount: `${formatMoney(data.amount || 0)} / ${formatRM(data.myrAmount || pointsToMyr(data.amount || 0))}`,
       source: "提现审批",
       sourceType: "withdrawal",
       status,
@@ -1154,7 +1170,7 @@ function fillPaymentForm(payment) {
   const result = document.querySelector("#scan-result");
 
   if (merchantInput) merchantInput.value = payment.merchant || "个人收款码";
-  if (amountInput) amountInput.value = payment.amount ? payment.amount.toFixed(2) : "";
+  if (amountInput) amountInput.value = payment.amount ? String(Math.round(payment.amount)) : "";
   if (codeInput) codeInput.value = payment.code || "";
   if (codeInput) codeInput.dataset.kind = payment.kind || "";
   if (codeInput) codeInput.dataset.recipientUserId = payment.recipientUserId || "";
@@ -1331,9 +1347,9 @@ function handleUserButton(button) {
     }
     openDialog(
       "钱包充值",
-      `<label class="field-label">充值金额</label>
+      `<label class="field-label">充值金额（RM）</label>
        <input class="dialog-input" id="recharge-amount" value="100.00" />
-       <p class="dialog-note">充值会先提交给后台审批，审批通过后余额才会增加。</p>`,
+       <p class="dialog-note">系统会按 RM 1 = 100 积分自动兑换，审批通过后积分才会增加。</p>`,
       "提交申请",
       async () => {
         const amount = parseAmount(document.querySelector("#recharge-amount").value);
@@ -1341,9 +1357,10 @@ function handleUserButton(button) {
           showToast("请输入正确的充值金额");
           return;
         }
+        const points = myrToPoints(amount);
         await submitRechargeRequest(amount);
         closeDialog();
-        showToast(`充值申请已提交：${formatMoney(amount)}`);
+        showToast(`充值申请已提交：${formatRM(amount)} = ${formatMoney(points)}`);
       }
     );
     return;
@@ -1356,11 +1373,11 @@ function handleUserButton(button) {
     }
     openDialog(
       "钱包提现",
-      `<label class="field-label">提现金额</label>
-       <input class="dialog-input" id="withdraw-amount" value="50.00" />
+      `<label class="field-label">提现积分</label>
+       <input class="dialog-input" id="withdraw-amount" value="5000" />
        <label class="field-label">到账银行卡/账户</label>
        <input class="dialog-input" id="withdraw-bank" value="Maybank **** 8821" />
-       <p class="dialog-note">提现会先提交给后台审批，审批通过后才会扣除钱包余额。</p>`,
+       <p class="dialog-note">系统会按 100 积分 = RM 1 自动换算，审批通过后才会扣除积分余额。</p>`,
       "提交申请",
       async () => {
         const amount = parseAmount(document.querySelector("#withdraw-amount").value);
@@ -1373,9 +1390,10 @@ function handleUserButton(button) {
           showToast("请输入到账银行卡/账户");
           return;
         }
-        await submitWithdrawalRequest(amount, bankAccount);
+        const points = Math.round(amount);
+        await submitWithdrawalRequest(points, bankAccount);
         closeDialog();
-        showToast(`提现申请已提交：${formatMoney(amount)}`);
+        showToast(`提现申请已提交：${formatMoney(points)} = ${formatRM(pointsToMyr(points))}`);
       }
     );
     return;
@@ -1401,8 +1419,8 @@ function handleUserButton(button) {
        <input class="dialog-input" id="pay-code" placeholder="粘贴或输入商家付款码/用户收款码" />
        <label class="field-label">对象</label>
        <input class="dialog-input" id="pay-merchant" value="" placeholder="扫码后自动填入" />
-       <label class="field-label">付款金额</label>
-       <input class="dialog-input" id="pay-amount" value="" placeholder="请输入金额" />`,
+       <label class="field-label">付款积分</label>
+       <input class="dialog-input" id="pay-amount" value="" placeholder="请输入积分" />`,
       "确认付款",
       confirmScanPayment
     );
@@ -1411,8 +1429,8 @@ function handleUserButton(button) {
       fillPaymentForm({
         kind: "merchant",
         merchant: "MY Coffee",
-        amount: 12.8,
-        code: "oneminpay://pay?merchant=MY%20Coffee&amount=12.80",
+        amount: 1280,
+        code: "oneminpay://pay?merchant=MY%20Coffee&amount=1280",
       });
       showToast("已填入测试付款码");
     });
@@ -1454,9 +1472,9 @@ function handleMerchantButton(button) {
   if (text.includes("动态")) {
     openDialog(
       "生成动态收款码",
-      `<label class="field-label">固定金额</label>
-       <input class="dialog-input" id="merchant-dynamic-amount" placeholder="留空为任意金额" />
-       <p class="dialog-note">用户扫码后会自动带入商家信息，填写金额后可直接付款。</p>`,
+      `<label class="field-label">固定积分</label>
+       <input class="dialog-input" id="merchant-dynamic-amount" placeholder="留空为任意积分" />
+       <p class="dialog-note">用户扫码后会自动带入商家信息，填写积分后可直接付款。</p>`,
       "生成",
       async () => {
         const amount = document.querySelector("#merchant-dynamic-amount").value.trim();
@@ -1476,7 +1494,7 @@ function handleMerchantButton(button) {
       `<div class="detail-list">
         <p><strong>订单号：</strong>${order?.id || "-"}</p>
         <p><strong>顾客：</strong>${order?.customer || "-"}</p>
-        <p><strong>金额：</strong>${formatMoney(order?.amount || 0)}</p>
+        <p><strong>积分：</strong>${formatMoney(order?.amount || 0)}</p>
         <p><strong>状态：</strong>已支付</p>
       </div>`,
       "关闭",
@@ -1540,7 +1558,7 @@ function handleMerchantButton(button) {
       `<div class="detail-list">
         <p><strong>订单号：</strong>M20260603001</p>
         <p><strong>顾客：</strong>Chen</p>
-        <p><strong>金额：</strong>RM 68.20</p>
+        <p><strong>积分：</strong>6,820 积分</p>
         <p><strong>状态：</strong>已支付</p>
       </div>`,
       "知道了",
@@ -1552,7 +1570,7 @@ function handleMerchantButton(button) {
   if (text.includes("处理")) {
     openDialog(
       "处理退款订单",
-      `<p class="dialog-note">订单 M20260603002 申请退款 RM 31.00。</p>`,
+      `<p class="dialog-note">订单 M20260603002 申请退款 3,100 积分。</p>`,
       "通过退款",
       () => {
         button.textContent = "已处理";
@@ -1574,7 +1592,7 @@ function handleMerchantButton(button) {
   if (text.includes("申请") || text.includes("凭证")) {
     openDialog(
       "结算管理",
-      `<p class="dialog-note">今日待结算金额 RM 12,900，将提交到绑定银行卡。</p>`,
+      `<p class="dialog-note">今日待结算 1,290,000 积分，系统会按比例换算成 RM 12,900 提交到绑定银行卡。</p>`,
       "确认结算",
       () => {
         closeDialog();
