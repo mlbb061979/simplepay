@@ -1688,7 +1688,7 @@ function renderWithdrawalRequests(requests = []) {
         <tr>
           <td>${request.email || request.userId}</td>
           <td>${formatMoney(request.amount || 0)}<br><small>${formatRM(request.myrAmount || pointsToMyr(request.amount || 0))}</small></td>
-          <td>${request.bankAccount || "-"}</td>
+          <td>${request.bankAccount || "-"}<br><small>${request.payoutReference || request.reviewNote || "-"}</small></td>
           <td>${statusTag(request.status || "pending")}</td>
           <td>
             ${
@@ -1757,7 +1757,7 @@ async function submitWithdrawalRequest(amount, bankAccount) {
   });
 }
 
-async function reviewWithdrawalRequest(requestId, approved) {
+async function reviewWithdrawalRequest(requestId, approved, reviewInfo = {}) {
   const request = withdrawalRequestsCache.find((item) => item.id === requestId);
   if (!request) throw new Error("找不到提现申请");
   if (request.status !== "pending") throw new Error("该申请已处理");
@@ -1786,23 +1786,23 @@ async function reviewWithdrawalRequest(requestId, approved) {
       requestRef,
       {
         status: approved ? "approved" : "rejected",
+        payoutReference: approved ? reviewInfo.payoutReference || "" : "",
+        reviewNote: reviewInfo.reviewNote || "",
         reviewedBy: currentUser.email,
         reviewedAt: serverTimestamp(),
       },
       { merge: true }
     );
 
-    if (approved) {
-      transaction.set(
-        userRef,
-        {
-          balance: balance - Number(latestRequest.amount || 0),
-          transactions: [tx, ...(userData.transactions || [])].slice(0, 30),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
+    transaction.set(
+      userRef,
+      {
+        balance: approved ? balance - Number(latestRequest.amount || 0) : balance,
+        transactions: [tx, ...(userData.transactions || [])].slice(0, 30),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   });
 
   await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
@@ -1811,7 +1811,7 @@ async function reviewWithdrawalRequest(requestId, approved) {
     module: "充值/提现管理",
     action: approved ? "通过提现申请" : "拒绝提现申请",
     target: requestId,
-    detail: `${request.email || request.userId} / ${formatMoney(request.amount || 0)}`,
+    detail: `${request.email || request.userId} / ${formatMoney(request.amount || 0)} / ${reviewInfo.payoutReference || reviewInfo.reviewNote || "-"}`,
   });
 }
 
@@ -4234,9 +4234,40 @@ function handleAdminButton(button) {
   if (button.classList.contains("withdrawal-action")) {
     if (!requireAdminPermission("funds")) return;
     const approved = button.dataset.action === "approve";
-    reviewWithdrawalRequest(button.dataset.requestId, approved)
-      .then(() => showToast(approved ? "提现申请已通过" : "提现申请已拒绝"))
-      .catch((error) => showToast(error.message || "审批失败"));
+    const request = withdrawalRequestsCache.find((item) => item.id === button.dataset.requestId);
+    openDialog(
+      approved ? "Approve withdrawal" : "Reject withdrawal",
+      `<p class="dialog-note">${request?.email || request?.userId || "-"} / ${formatMoney(request?.amount || 0)} / ${formatRM(request?.myrAmount || pointsToMyr(request?.amount || 0))}</p>
+       <p class="dialog-note">Bank account: ${request?.bankAccount || "-"}</p>
+       ${
+         approved
+           ? `<label class="field-label">Payout reference</label>
+              <input class="dialog-input" id="withdrawal-payout-reference" placeholder="Bank transfer reference" />`
+           : ""
+       }
+       <label class="field-label">${approved ? "Review note" : "Reject reason"}</label>
+       <input class="dialog-input" id="withdrawal-review-note" placeholder="${approved ? "Optional note" : "Reason for rejection"}" />`,
+      approved ? "Approve" : "Reject",
+      async () => {
+        const payoutReference = document.querySelector("#withdrawal-payout-reference")?.value.trim() || "";
+        const reviewNote = document.querySelector("#withdrawal-review-note")?.value.trim() || "";
+        if (approved && !payoutReference) {
+          showToast("Please enter payout reference");
+          return;
+        }
+        if (!approved && !reviewNote) {
+          showToast("Please enter reject reason");
+          return;
+        }
+        try {
+          await reviewWithdrawalRequest(button.dataset.requestId, approved, { payoutReference, reviewNote });
+          closeDialog();
+          showToast(approved ? "Withdrawal approved" : "Withdrawal rejected");
+        } catch (error) {
+          showToast(error.message || "Withdrawal review failed");
+        }
+      }
+    );
     return;
   }
 
