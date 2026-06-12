@@ -2323,6 +2323,16 @@ function normalizeTransactionRow(row) {
   };
 }
 
+function reviewDetail(data = {}, referenceKey = "payoutReference") {
+  return [
+    data[referenceKey] ? `Reference: ${data[referenceKey]}` : "",
+    data.reviewNote ? `Note: ${data.reviewNote}` : "",
+    data.reviewedBy ? `Reviewed by: ${data.reviewedBy}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function sumApproved(docs, field = "amount") {
   return docs.reduce((total, item) => total + (item.status === "approved" ? Number(item[field] || 0) : 0), 0);
 }
@@ -2755,7 +2765,7 @@ async function loadAdminTransactions() {
       status,
       statusClass,
       createdAt: data.createdAt || "",
-      detail: `申请UID: ${data.userId || "-"}`,
+      detail: [`Applicant UID: ${data.userId || "-"}`, reviewDetail(data, "paymentReference")].filter(Boolean).join(" / "),
     };
   });
 
@@ -2777,7 +2787,7 @@ async function loadAdminTransactions() {
       status,
       statusClass,
       createdAt: data.createdAt || "",
-      detail: `银行卡: ${data.bankAccount || "-"} / UID: ${data.userId || "-"}`,
+      detail: [`Bank account: ${data.bankAccount || "-"} / UID: ${data.userId || "-"}`, reviewDetail(data, "payoutReference")].filter(Boolean).join(" / "),
     };
   });
 
@@ -2821,7 +2831,7 @@ async function loadAdminTransactions() {
       status,
       statusClass,
       createdAt: data.createdAt || "",
-      detail: `商家UID: ${data.merchantId || "-"}`,
+      detail: [`Merchant UID: ${data.merchantId || "-"}`, `Settlement account: ${[data.settlementBank, data.settlementAccount].filter(Boolean).join(" / ") || "-"}`, reviewDetail(data, "payoutReference")].filter(Boolean).join(" / "),
     };
   });
 
