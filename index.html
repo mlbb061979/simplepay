@@ -258,6 +258,20 @@
                 </tbody>
               </table>
             </article>
+            <article class="table-panel" id="admin-settlement-management">
+              <div class="panel-header">
+                <h2>结算审批</h2>
+                <button class="ghost-action" id="refresh-settlements-button" type="button">刷新结算</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>结算单</th><th>商家</th><th>积分 / RM</th><th>时间</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-settlements-body">
+                  <tr><td colspan="6">进入后台后加载结算申请</td></tr>
+                </tbody>
+              </table>
+            </article>
             <article class="table-panel" id="admin-transaction-management">
               <div class="panel-header">
                 <h2>交易管理</h2>
@@ -270,6 +284,7 @@
                 <button class="filter-chip transaction-filter" data-filter="recharge" type="button">充值申请</button>
                 <button class="filter-chip transaction-filter" data-filter="withdrawal" type="button">提现申请</button>
                 <button class="filter-chip transaction-filter" data-filter="refund" type="button">退款申请</button>
+                <button class="filter-chip transaction-filter" data-filter="settlement" type="button">结算申请</button>
               </div>
               <table>
                 <thead>

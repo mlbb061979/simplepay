@@ -73,6 +73,7 @@ let merchantsCache = [];
 let rechargeRequestsCache = [];
 let withdrawalRequestsCache = [];
 let refundRequestsCache = [];
+let settlementRequestsCache = [];
 let adminTransactionsCache = [];
 let adminTransactionFilter = "all";
 
@@ -275,6 +276,7 @@ function statusTag(status) {
   if (status === "pending") return '<span class="tag warning">待审批</span>';
   if (status === "approved") return '<span class="tag success">已通过</span>';
   if (status === "rejected") return '<span class="tag danger">已拒绝</span>';
+  if (status === "settled") return '<span class="tag success">已结算</span>';
   if (status === "refund_pending") return '<span class="tag warning">退款审批中</span>';
   if (status === "refunded") return '<span class="tag danger">已退款</span>';
   return status === "frozen"
@@ -384,6 +386,7 @@ function renderList(selector, items, emptyText, mapper) {
 function renderMerchantDashboard(data = {}) {
   const orders = Array.isArray(data.orders) ? data.orders : [];
   const refunds = Array.isArray(data.refunds) ? data.refunds : [];
+  const settlements = Array.isArray(data.settlements) ? data.settlements : [];
   const transactions = Array.isArray(data.transactions) ? data.transactions : [];
   const notifications = Array.isArray(data.notifications) ? data.notifications : [];
   const totalReceived = Number(data.totalReceived || 0);
@@ -438,7 +441,19 @@ function renderMerchantDashboard(data = {}) {
     "暂无退款申请",
     (item) => `<li><span>${item.orderId || item.id} · ${item.status === "pending" ? "待后台审批" : item.status === "approved" ? "已退款" : "已拒绝"}</span><strong>${formatMoney(item.amount || 0)}</strong></li>`
   );
-  renderList("#merchant-settlements-list", [{ amount: settlementBalance }], "暂无待结算余额", (item) => `<li><span>待结算余额</span><strong>${formatMoney(item.amount || 0)}</strong><button id="merchant-settlement-button" type="button">申请</button></li>`);
+  const settlementItems = [
+    { id: "available", amount: settlementBalance, status: "available" },
+    ...settlements.slice(0, 5),
+  ];
+  renderList(
+    "#merchant-settlements-list",
+    settlementItems,
+    "暂无待结算余额",
+    (item) =>
+      item.status === "available"
+        ? `<li><span>待结算余额</span><strong>${formatMoney(item.amount || 0)}</strong><button id="merchant-settlement-button" type="button">申请</button></li>`
+        : `<li><span>${item.id || "结算单"} · ${item.status === "pending" ? "待后台审批" : item.status === "approved" ? "已结算" : "已拒绝"}</span><strong>${formatMoney(item.amount || 0)}</strong></li>`
+  );
   renderList("#merchant-transactions-list", transactions, "暂无交易记录", (item) => `<li><span>${item.type || "交易"} ${item.target || ""}</span><strong>${item.amount || "-"}</strong></li>`);
   renderList("#merchant-notifications-list", notifications, "暂无支付通知", (item) => `<li><span>${item.text}</span><strong>${item.time || "刚刚"}</strong></li>`);
 }
@@ -528,6 +543,7 @@ async function ensureMerchant(user) {
     refundTotal: 0,
     orders: [],
     refunds: [],
+    settlements: [],
     transactions: [],
     notifications: [],
     merchantCode: createMerchantCode(user),
@@ -959,6 +975,153 @@ async function reviewRefundRequest(requestId, approved) {
   loadAdminTransactions().catch(() => {});
 }
 
+function renderSettlementRequests(requests = []) {
+  const body = document.querySelector("#admin-settlements-body");
+  if (!body) return;
+  if (!requests.length) {
+    body.innerHTML = '<tr><td colspan="6">暂无结算申请</td></tr>';
+    return;
+  }
+
+  body.innerHTML = requests
+    .map(
+      (request) => `
+        <tr>
+          <td>${request.id}</td>
+          <td>${request.merchantName || request.merchantEmail || request.merchantId || "-"}</td>
+          <td>${formatMoney(request.amount || 0)}<br><small>${formatRM(pointsToMyr(request.amount || 0))}</small></td>
+          <td>${request.time || "-"}</td>
+          <td>${statusTag(request.status || "pending")}</td>
+          <td>
+            ${
+              request.status === "pending"
+                ? `<button class="text-action settlement-action" data-action="approve" data-request-id="${request.id}">通过</button>
+                   <button class="text-action settlement-action" data-action="reject" data-request-id="${request.id}">拒绝</button>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadSettlementRequests() {
+  const body = document.querySelector("#admin-settlements-body");
+  if (body) body.innerHTML = '<tr><td colspan="6">正在加载结算申请...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "settlementRequests"));
+  settlementRequestsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderSettlementRequests(settlementRequestsCache);
+}
+
+async function submitSettlementRequest(amount) {
+  if (!currentMerchant?.id) throw new Error("请先登录商家账号");
+  if (merchantStatus !== "approved") throw new Error("商家未通过审核，无法申请结算");
+  if (!amount || amount <= 0) throw new Error("当前没有可结算积分");
+
+  const requestId = `S${Date.now()}`;
+  await runTransaction(db, async (transaction) => {
+    const merchantDocRef = merchantRef();
+    const requestRef = doc(db, "settlementRequests", requestId);
+    const merchantSnap = await transaction.get(merchantDocRef);
+    if (!merchantSnap.exists()) throw new Error("商家资料不存在");
+
+    const merchantData = merchantSnap.data() || {};
+    const currentBalance = Number(merchantData.settlementBalance || 0);
+    if (currentBalance < amount) throw new Error("可结算积分不足");
+
+    const settlement = {
+      id: requestId,
+      merchantId: currentMerchant.id,
+      merchantName: merchantData.businessName || currentUser.email,
+      merchantEmail: currentUser.email,
+      amount,
+      myrAmount: pointsToMyr(amount),
+      status: "pending",
+      time: "刚刚",
+      createdAt: new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    };
+    const merchantSettlements = Array.isArray(merchantData.settlements) ? merchantData.settlements : [];
+    const merchantTx = transactionItem("申请结算", "后台审批", `- ${formatMoney(amount)}`);
+
+    transaction.set(requestRef, settlement, { merge: true });
+    transaction.set(
+      merchantDocRef,
+      {
+        settlementBalance: currentBalance - amount,
+        settlements: [settlement, ...merchantSettlements.filter((item) => item.id !== requestId)].slice(0, 30),
+        transactions: [merchantTx, ...(merchantData.transactions || [])].slice(0, 30),
+        notifications: [{ text: `结算 ${requestId} 已提交后台审批`, time: "刚刚" }, ...(merchantData.notifications || [])].slice(0, 20),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+}
+
+async function reviewSettlementRequest(requestId, approved) {
+  const request = settlementRequestsCache.find((item) => item.id === requestId);
+  if (!request) throw new Error("找不到结算申请");
+  if (request.status !== "pending") throw new Error("该结算申请已处理");
+
+  await runTransaction(db, async (transaction) => {
+    const requestRef = doc(db, "settlementRequests", requestId);
+    const merchantDocRef = doc(db, "merchants", request.merchantId);
+    const requestSnap = await transaction.get(requestRef);
+    const merchantSnap = await transaction.get(merchantDocRef);
+    if (!requestSnap.exists()) throw new Error("结算申请不存在");
+    if (!merchantSnap.exists()) throw new Error("商家资料不存在");
+
+    const latestRequest = requestSnap.data();
+    if (latestRequest.status !== "pending") throw new Error("该结算申请已处理");
+
+    const amount = Number(latestRequest.amount || 0);
+    const merchantData = merchantSnap.data() || {};
+    const settlements = Array.isArray(merchantData.settlements) ? merchantData.settlements : [];
+    const nextStatus = approved ? "approved" : "rejected";
+    const merchantTx = transactionItem(
+      approved ? "结算通过" : "结算拒绝",
+      "后台审批",
+      approved ? `${formatMoney(amount)} / ${formatRM(pointsToMyr(amount))}` : `+ ${formatMoney(amount)}`
+    );
+
+    transaction.set(
+      requestRef,
+      {
+        status: nextStatus,
+        reviewedBy: currentUser.email,
+        reviewedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    transaction.set(
+      merchantDocRef,
+      {
+        settlementBalance: approved
+          ? Number(merchantData.settlementBalance || 0)
+          : Number(merchantData.settlementBalance || 0) + amount,
+        settlements: settlements.map((item) => (item.id === requestId ? { ...item, status: nextStatus } : item)),
+        transactions: [merchantTx, ...(merchantData.transactions || [])].slice(0, 30),
+        notifications: [
+          { text: `结算 ${requestId} ${approved ? "已通过" : "已拒绝，积分已退回待结算"}`, time: "刚刚" },
+          ...(merchantData.notifications || []),
+        ].slice(0, 20),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+
+  await Promise.all([loadSettlementRequests(), loadMerchants()]);
+  loadAdminTransactions().catch(() => {});
+}
+
 async function setUserFrozen(userId, frozen) {
   await setDoc(
     doc(db, "wallets", userId),
@@ -1032,12 +1195,13 @@ async function loadAdminTransactions() {
   const body = document.querySelector("#admin-transactions-body");
   if (body) body.innerHTML = '<tr><td colspan="7">正在加载交易流水...</td></tr>';
 
-  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot] = await Promise.all([
+  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
     getDocs(collection(db, "wallets")),
     getDocs(collection(db, "merchants")),
     getDocs(collection(db, "rechargeRequests")),
     getDocs(collection(db, "withdrawRequests")),
     getDocs(collection(db, "refundRequests")),
+    getDocs(collection(db, "settlementRequests")),
   ]);
 
   const walletRows = walletSnapshot.docs.flatMap((docSnap) => {
@@ -1143,7 +1307,29 @@ async function loadAdminTransactions() {
     };
   });
 
-  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows, ...withdrawalRows, ...refundRows].sort((a, b) =>
+  const settlementRows = settlementSnapshot.docs.map((docSnap) => {
+    const data = docSnap.data();
+    const statusMap = {
+      pending: ["待审批", "warning"],
+      approved: ["已通过", "success"],
+      rejected: ["已拒绝", "danger"],
+    };
+    const [status, statusClass] = statusMap[data.status || "pending"] || statusMap.pending;
+    return {
+      id: docSnap.id,
+      account: data.merchantName || data.merchantEmail || data.merchantId,
+      type: "结算申请",
+      amount: `${formatMoney(data.amount || 0)} / ${formatRM(data.myrAmount || pointsToMyr(data.amount || 0))}`,
+      source: "结算审批",
+      sourceType: "settlement",
+      status,
+      statusClass,
+      createdAt: data.createdAt || "",
+      detail: `商家UID: ${data.merchantId || "-"}`,
+    };
+  });
+
+  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows, ...withdrawalRows, ...refundRows, ...settlementRows].sort((a, b) =>
     String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
   );
   renderAdminTransactions();
@@ -1297,6 +1483,7 @@ function enterRole(target) {
   if (target === "admin") loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
   if (target === "admin") loadWithdrawalRequests().catch((error) => showToast(error.message || "提现申请加载失败"));
   if (target === "admin") loadRefundRequests().catch((error) => showToast(error.message || "退款申请加载失败"));
+  if (target === "admin") loadSettlementRequests().catch((error) => showToast(error.message || "结算申请加载失败"));
   if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
@@ -1744,28 +1931,16 @@ function handleMerchantButton(button) {
     }
     openDialog(
       "申请结算",
-      `<p class="dialog-note">本次申请结算 ${formatMoney(amount)}，原型会生成结算记录并清空待结算余额。</p>`,
+      `<p class="dialog-note">本次申请结算 ${formatMoney(amount)}，后台通过后会按 ${formatRM(pointsToMyr(amount))} 出款。</p>`,
       "提交结算",
       async () => {
-        const settlement = {
-          id: `S${Date.now()}`,
-          amount,
-          status: "pending",
-          time: "刚刚",
-          createdAt: new Date().toISOString(),
-        };
-        await setDoc(
-          merchantRef(),
-          {
-            settlementBalance: 0,
-            settlements: [settlement, ...(currentMerchant?.settlements || [])].slice(0, 20),
-            notifications: [{ text: `结算 ${settlement.id} 已提交`, time: "刚刚" }, ...(currentMerchant?.notifications || [])].slice(0, 20),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-        closeDialog();
-        showToast("结算申请已提交");
+        try {
+          await submitSettlementRequest(amount);
+          closeDialog();
+          showToast("结算申请已提交后台审批");
+        } catch (error) {
+          showToast(error.message || "结算申请提交失败");
+        }
       }
     );
     return;
@@ -1861,6 +2036,13 @@ function handleAdminButton(button) {
   if (button.id === "refresh-refunds-button") {
     loadRefundRequests()
       .then(() => showToast("退款申请已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "refresh-settlements-button") {
+    loadSettlementRequests()
+      .then(() => showToast("结算申请已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
     return;
   }
@@ -1962,6 +2144,14 @@ function handleAdminButton(button) {
     const approved = button.dataset.action === "approve";
     reviewRefundRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "退款申请已通过，积分已退回用户" : "退款申请已拒绝"))
+      .catch((error) => showToast(error.message || "审批失败"));
+    return;
+  }
+
+  if (button.classList.contains("settlement-action")) {
+    const approved = button.dataset.action === "approve";
+    reviewSettlementRequest(button.dataset.requestId, approved)
+      .then(() => showToast(approved ? "结算申请已通过" : "结算申请已拒绝，积分已退回待结算"))
       .catch((error) => showToast(error.message || "审批失败"));
     return;
   }
