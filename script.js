@@ -61,6 +61,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   rechargeEnabled: true,
   withdrawEnabled: true,
   noticeTemplate: "您的交易已处理完成",
+  riskHandledIds: [],
 };
 const ADMIN_MODULES = {
   users: "用户管理",
@@ -2276,6 +2277,16 @@ function riskLevelTag(level) {
   return '<span class="tag success">低风险</span>';
 }
 
+function getHandledRiskIds() {
+  return Array.isArray(systemConfig.riskHandledIds) ? systemConfig.riskHandledIds : [];
+}
+
+async function markRiskHandled(riskId) {
+  const nextIds = [riskId, ...getHandledRiskIds().filter((id) => id !== riskId)].slice(0, 300);
+  systemConfig = { ...systemConfig, riskHandledIds: nextIds };
+  await setDoc(doc(db, "systemConfig", "main"), { riskHandledIds: nextIds, updatedAt: serverTimestamp() }, { merge: true });
+}
+
 function addRisk(alerts, alert) {
   alerts.push({
     id: alert.id,
@@ -2287,7 +2298,7 @@ function addRisk(alerts, alert) {
     reason: alert.reason,
     suggestion: alert.suggestion,
     action: alert.action || "review",
-    status: alert.status || "open",
+    status: getHandledRiskIds().includes(alert.id) ? "handled" : alert.status || "open",
   });
 }
 
@@ -2345,13 +2356,17 @@ async function loadRiskCenter() {
   const body = document.querySelector("#admin-risk-body");
   if (body) body.innerHTML = '<tr><td colspan="6">正在扫描风控预警...</td></tr>';
 
-  const [walletSnapshot, merchantSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+  const [configSnap, walletSnapshot, merchantSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+    getDoc(doc(db, "systemConfig", "main")),
     getDocs(collection(db, "wallets")),
     getDocs(collection(db, "merchants")),
     getDocs(collection(db, "withdrawRequests")),
     getDocs(collection(db, "refundRequests")),
     getDocs(collection(db, "settlementRequests")),
   ]);
+  if (configSnap.exists()) {
+    systemConfig = { ...DEFAULT_SYSTEM_CONFIG, ...systemConfig, ...configSnap.data() };
+  }
 
   const wallets = walletSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
   const merchants = merchantSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
@@ -3874,9 +3889,19 @@ function handleAdminButton(button) {
       return;
     }
     if (action === "handle") {
-      alert.status = "handled";
-      renderRiskAlerts(riskAlertsCache);
-      showToast("该预警已标记为处理");
+      markRiskHandled(alert.id)
+        .then(() => {
+          alert.status = "handled";
+          renderRiskAlerts(riskAlertsCache);
+          logAuditSafe({
+            module: "Risk center",
+            action: "Mark risk handled",
+            target: alert.id,
+            detail: `${alert.subject || "-"} / ${alert.type || "-"}`,
+          });
+          showToast("Risk alert marked as handled");
+        })
+        .catch((error) => showToast(error.message || "Mark handled failed"));
       return;
     }
   }
