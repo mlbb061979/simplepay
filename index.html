@@ -112,6 +112,16 @@
               </div>
               <ul id="user-marketing-list"><li><span>登录后显示公告、活动和可用优惠券</span><strong>-</strong></li></ul>
             </article>
+            <article class="list-panel full">
+              <div class="panel-header">
+                <h2>客服工单</h2>
+                <div>
+                  <button class="ghost-action" id="create-user-ticket-button" type="button">提交工单</button>
+                  <button class="ghost-action" id="refresh-user-tickets-button" type="button">刷新</button>
+                </div>
+              </div>
+              <ul id="user-ticket-list"><li><span>登录后显示你的客服工单</span><strong>-</strong></li></ul>
+            </article>
             <article class="table-panel full">
               <div class="panel-header">
                 <h2>交易记录</h2>
@@ -386,6 +396,20 @@
                 </thead>
                 <tbody id="admin-marketing-body">
                   <tr><td colspan="6">进入后台后加载公告活动优惠券</td></tr>
+                </tbody>
+              </table>
+            </article>
+            <article class="table-panel" id="admin-support-management">
+              <div class="panel-header">
+                <h2>客服工单</h2>
+                <button class="ghost-action" id="refresh-support-button" type="button">刷新工单</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>工单号</th><th>用户</th><th>类型</th><th>标题</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-support-body">
+                  <tr><td colspan="6">进入后台后加载客服工单</td></tr>
                 </tbody>
               </table>
             </article>

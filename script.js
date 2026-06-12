@@ -67,13 +67,14 @@ const ADMIN_MODULES = {
   permissions: "权限管理",
   logs: "操作日志",
   marketing: "公告/活动/优惠券管理",
+  support: "客服工单",
 };
 const ADMIN_ROLE_PRESETS = {
   owner: Object.keys(ADMIN_MODULES),
   ops: ["users", "merchants", "transactions", "funds", "refunds", "settlements", "kyc", "marketing"],
   finance: ["transactions", "funds", "refunds", "settlements", "finance"],
   risk: ["users", "transactions", "risk", "kyc"],
-  support: ["users", "transactions", "refunds", "kyc"],
+  support: ["users", "transactions", "refunds", "kyc", "support"],
 };
 const MODULE_PERMISSION_BY_TITLE = Object.fromEntries(Object.entries(ADMIN_MODULES).map(([key, title]) => [title, key]));
 
@@ -104,6 +105,7 @@ let riskAlertsCache = [];
 let permissionAdminsCache = [];
 let auditLogsCache = [];
 let marketingItemsCache = [];
+let supportTicketsCache = [];
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
@@ -307,6 +309,7 @@ function applyAdminPermissions() {
     "#admin-permission-management": "permissions",
     "#admin-audit-log": "logs",
     "#admin-marketing-management": "marketing",
+    "#admin-support-management": "support",
     "#admin-transaction-management": "transactions",
   };
   Object.entries(sectionPermissions).forEach(([selector, permission]) => {
@@ -667,6 +670,148 @@ async function updateMarketingStatus(itemId, status) {
     detail: item?.title || "-",
   });
   await loadMarketingItems();
+}
+
+function ticketStatusLabel(status) {
+  if (status === "open") return '<span class="tag warning">待处理</span>';
+  if (status === "processing") return '<span class="tag warning">处理中</span>';
+  if (status === "closed") return '<span class="tag success">已关闭</span>';
+  return '<span class="tag warning">待处理</span>';
+}
+
+function ticketTypeLabel(type) {
+  const labels = {
+    complaint: "投诉",
+    refund: "退款争议",
+    account: "账户问题",
+    payment: "支付问题",
+    other: "其他",
+  };
+  return labels[type] || type || "其他";
+}
+
+function renderUserTickets(tickets = []) {
+  const ownTickets = tickets.filter((ticket) => ticket.userId === currentUser?.uid);
+  renderList(
+    "#user-ticket-list",
+    ownTickets,
+    "暂无客服工单",
+    (ticket) => `<li><span>${ticketTypeLabel(ticket.type)} · ${ticket.title}</span><strong>${ticket.status === "closed" ? "已关闭" : ticket.status === "processing" ? "处理中" : "待处理"}</strong></li>`
+  );
+}
+
+function renderSupportTickets(tickets = []) {
+  const body = document.querySelector("#admin-support-body");
+  if (!body) return;
+  if (!tickets.length) {
+    body.innerHTML = '<tr><td colspan="6">暂无客服工单</td></tr>';
+    return;
+  }
+
+  body.innerHTML = tickets
+    .map(
+      (ticket) => `
+        <tr>
+          <td>${ticket.id}</td>
+          <td>${ticket.email || ticket.userId}</td>
+          <td>${ticketTypeLabel(ticket.type)}</td>
+          <td>${ticket.title || "-"}</td>
+          <td>${ticketStatusLabel(ticket.status || "open")}</td>
+          <td>
+            <button class="text-action support-action" data-action="view" data-ticket-id="${ticket.id}">查看</button>
+            ${
+              ticket.status === "open"
+                ? `<button class="text-action support-action" data-action="assign" data-ticket-id="${ticket.id}">接单</button>`
+                : ""
+            }
+            ${
+              ticket.status !== "closed"
+                ? `<button class="text-action support-action" data-action="reply" data-ticket-id="${ticket.id}">回复</button>
+                   <button class="text-action support-action" data-action="close" data-ticket-id="${ticket.id}">关闭</button>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadSupportTickets() {
+  const body = document.querySelector("#admin-support-body");
+  if (body) body.innerHTML = '<tr><td colspan="6">正在加载客服工单...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "supportTickets"));
+  supportTicketsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderSupportTickets(supportTicketsCache);
+  renderUserTickets(supportTicketsCache);
+}
+
+async function createSupportTicket(data) {
+  const ticketId = `TK${Date.now()}`;
+  await setDoc(doc(db, "supportTickets", ticketId), {
+    ...data,
+    id: ticketId,
+    userId: currentUser.uid,
+    email: currentUser.email,
+    displayName: currentUser.displayName || "",
+    status: "open",
+    replies: [],
+    time: "刚刚",
+    createdAt: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
+  });
+  await loadSupportTickets();
+}
+
+async function updateSupportTicket(ticketId, patch, auditAction = "更新客服工单") {
+  const ticket = supportTicketsCache.find((item) => item.id === ticketId);
+  await setDoc(
+    doc(db, "supportTickets", ticketId),
+    {
+      ...patch,
+      updatedBy: currentUser.email,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  logAuditSafe({
+    module: "客服工单",
+    action: auditAction,
+    target: ticketId,
+    detail: ticket?.title || "-",
+  });
+  await loadSupportTickets();
+}
+
+function openSupportReply(ticket) {
+  openDialog(
+    "回复客服工单",
+    `<p class="dialog-note">${ticket.title || "-"}</p>
+     <label class="field-label">回复内容</label>
+     <input class="dialog-input" id="support-reply" placeholder="输入处理结果或补充说明" />`,
+    "提交回复",
+    async () => {
+      const reply = document.querySelector("#support-reply").value.trim();
+      if (!reply) {
+        showToast("请输入回复内容");
+        return;
+      }
+      const replies = [
+        { by: currentUser.email, text: reply, time: "刚刚", createdAt: new Date().toISOString() },
+        ...(ticket.replies || []),
+      ].slice(0, 20);
+      try {
+        await updateSupportTicket(ticket.id, { status: "processing", replies }, "回复客服工单");
+        closeDialog();
+        showToast("工单回复已提交");
+      } catch (error) {
+        showToast(error.message || "回复失败");
+      }
+    }
+  );
 }
 
 async function loadAuditLogs() {
@@ -2402,6 +2547,7 @@ async function loginAs(target) {
     if (target === "user") {
       await attachWallet(currentUser);
       loadMarketingItems().catch(() => {});
+      loadSupportTickets().catch(() => {});
     }
     if (target === "merchant") await attachMerchant(currentUser);
     if (target === "admin") {
@@ -2440,6 +2586,7 @@ function enterRole(target) {
     if (hasAdminPermission("permissions")) loadPermissionAdmins().catch((error) => showToast(error.message || "权限数据加载失败"));
     if (hasAdminPermission("logs")) loadAuditLogs().catch((error) => showToast(error.message || "操作日志加载失败"));
     if (hasAdminPermission("marketing")) loadMarketingItems().catch((error) => showToast(error.message || "营销内容加载失败"));
+    if (hasAdminPermission("support")) loadSupportTickets().catch((error) => showToast(error.message || "客服工单加载失败"));
     if (hasAdminPermission("transactions")) loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
   }
 }
@@ -2703,6 +2850,49 @@ function handleUserButton(button) {
     loadMarketingItems()
       .then(() => showToast("公告与优惠券已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "refresh-user-tickets-button") {
+    loadSupportTickets()
+      .then(() => showToast("客服工单已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "create-user-ticket-button") {
+    openDialog(
+      "提交客服工单",
+      `<label class="field-label">问题类型</label>
+       <select class="dialog-input" id="ticket-type">
+         <option value="account">账户问题</option>
+         <option value="payment">支付问题</option>
+         <option value="refund">退款争议</option>
+         <option value="complaint">投诉</option>
+         <option value="other">其他</option>
+       </select>
+       <label class="field-label">标题</label>
+       <input class="dialog-input" id="ticket-title" placeholder="简单描述你的问题" />
+       <label class="field-label">问题说明</label>
+       <input class="dialog-input" id="ticket-message" placeholder="请输入详细情况、订单号或截图说明" />`,
+      "提交工单",
+      async () => {
+        const type = document.querySelector("#ticket-type").value;
+        const title = document.querySelector("#ticket-title").value.trim();
+        const message = document.querySelector("#ticket-message").value.trim();
+        if (!title || !message) {
+          showToast("请填写标题和问题说明");
+          return;
+        }
+        try {
+          await createSupportTicket({ type, title, message });
+          closeDialog();
+          showToast("客服工单已提交");
+        } catch (error) {
+          showToast(error.message || "提交失败");
+        }
+      }
+    );
     return;
   }
 
@@ -3111,6 +3301,14 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-support-button") {
+    if (!requireAdminPermission("support")) return;
+    loadSupportTickets()
+      .then(() => showToast("客服工单已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "create-marketing-button") {
     if (!requireAdminPermission("marketing")) return;
     openMarketingEditor();
@@ -3218,6 +3416,50 @@ function handleAdminButton(button) {
       .then(() => showToast(action === "publish" ? "营销内容已发布" : "营销内容已停用"))
       .catch((error) => showToast(error.message || "操作失败"));
     return;
+  }
+
+  if (button.classList.contains("support-action")) {
+    if (!requireAdminPermission("support")) return;
+    const ticket = supportTicketsCache.find((item) => item.id === button.dataset.ticketId);
+    if (!ticket) {
+      showToast("找不到客服工单");
+      return;
+    }
+    const action = button.dataset.action;
+    if (action === "view") {
+      const replies = (ticket.replies || []).map((reply) => `<p><strong>${reply.by}：</strong>${reply.text}</p>`).join("") || "<p>暂无回复</p>";
+      openDialog(
+        "客服工单详情",
+        `<div class="detail-list">
+          <p><strong>工单号：</strong>${ticket.id}</p>
+          <p><strong>用户：</strong>${ticket.email || ticket.userId}</p>
+          <p><strong>类型：</strong>${ticketTypeLabel(ticket.type)}</p>
+          <p><strong>标题：</strong>${ticket.title || "-"}</p>
+          <p><strong>说明：</strong>${ticket.message || "-"}</p>
+          <p><strong>状态：</strong>${ticket.status || "open"}</p>
+          <div>${replies}</div>
+        </div>`,
+        "关闭",
+        closeDialog
+      );
+      return;
+    }
+    if (action === "assign") {
+      updateSupportTicket(ticket.id, { status: "processing", assignedTo: currentUser.email }, "接收客服工单")
+        .then(() => showToast("工单已接收"))
+        .catch((error) => showToast(error.message || "接单失败"));
+      return;
+    }
+    if (action === "reply") {
+      openSupportReply(ticket);
+      return;
+    }
+    if (action === "close") {
+      updateSupportTicket(ticket.id, { status: "closed", closedBy: currentUser.email }, "关闭客服工单")
+        .then(() => showToast("工单已关闭"))
+        .catch((error) => showToast(error.message || "关闭失败"));
+      return;
+    }
   }
 
   if (button.classList.contains("risk-action")) {
@@ -3487,6 +3729,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
       loadMarketingItems()
         .then(() => showToast("营销管理已打开"))
         .catch((error) => showToast(error.message || "营销内容加载失败"));
+      return;
+    }
+    if (title === "客服工单") {
+      document.querySelector("#admin-support-management")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadSupportTickets()
+        .then(() => showToast("客服工单已打开"))
+        .catch((error) => showToast(error.message || "客服工单加载失败"));
       return;
     }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {
