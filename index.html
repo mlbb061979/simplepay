@@ -413,6 +413,43 @@
                 </tbody>
               </table>
             </article>
+            <article class="table-panel" id="admin-system-config">
+              <div class="panel-header">
+                <h2>系统配置</h2>
+                <button class="ghost-action" id="refresh-config-button" type="button">刷新配置</button>
+              </div>
+              <div class="metric-row finance-metrics">
+                <div><span>兑换比例</span><strong id="config-rate-summary">100 积分/RM</strong></div>
+                <div><span>商家费率</span><strong id="config-fee-summary">0.60%</strong></div>
+                <div><span>每日限额</span><strong id="config-limit-summary">0 积分</strong></div>
+                <div><span>维护模式</span><strong id="config-maintenance-summary">关闭</strong></div>
+              </div>
+              <div class="config-grid">
+                <label class="field-label">RM 1 兑换积分<input class="dialog-input" id="config-points-rate" value="100" /></label>
+                <label class="field-label">默认商家费率<input class="dialog-input" id="config-merchant-fee" value="0.60%" /></label>
+                <label class="field-label">用户每日交易限额<input class="dialog-input" id="config-daily-limit" value="400000" /></label>
+                <label class="field-label">维护模式
+                  <select class="dialog-input" id="config-maintenance">
+                    <option value="off">关闭</option>
+                    <option value="on">开启</option>
+                  </select>
+                </label>
+                <label class="field-label">充值通道
+                  <select class="dialog-input" id="config-recharge-enabled">
+                    <option value="on">开启</option>
+                    <option value="off">关闭</option>
+                  </select>
+                </label>
+                <label class="field-label">提现通道
+                  <select class="dialog-input" id="config-withdraw-enabled">
+                    <option value="on">开启</option>
+                    <option value="off">关闭</option>
+                  </select>
+                </label>
+                <label class="field-label">通知模板<input class="dialog-input" id="config-notice-template" value="您的交易已处理完成" /></label>
+                <button class="primary-action" id="save-config-button" type="button">保存配置</button>
+              </div>
+            </article>
             <article class="table-panel" id="admin-transaction-management">
               <div class="panel-header">
                 <h2>交易管理</h2>

@@ -53,7 +53,15 @@ const roleConfig = {
   admin: { title: "后台界面", label: "管理员 Google 账号" },
 };
 const OWNER_ADMIN_EMAIL = "stanleyhoh79@gmail.com";
-const POINTS_PER_MYR = 100;
+const DEFAULT_SYSTEM_CONFIG = {
+  pointsPerMyr: 100,
+  merchantFeeRate: "0.60%",
+  dailyTransactionLimit: 400000,
+  maintenanceMode: false,
+  rechargeEnabled: true,
+  withdrawEnabled: true,
+  noticeTemplate: "您的交易已处理完成",
+};
 const ADMIN_MODULES = {
   users: "用户管理",
   merchants: "商家管理",
@@ -68,6 +76,7 @@ const ADMIN_MODULES = {
   logs: "操作日志",
   marketing: "公告/活动/优惠券管理",
   support: "客服工单",
+  config: "系统配置",
 };
 const ADMIN_ROLE_PRESETS = {
   owner: Object.keys(ADMIN_MODULES),
@@ -106,6 +115,7 @@ let permissionAdminsCache = [];
 let auditLogsCache = [];
 let marketingItemsCache = [];
 let supportTicketsCache = [];
+let systemConfig = { ...DEFAULT_SYSTEM_CONFIG };
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
@@ -120,11 +130,11 @@ function formatRM(amount) {
 }
 
 function myrToPoints(amount) {
-  return Math.round(Number(amount || 0) * POINTS_PER_MYR);
+  return Math.round(Number(amount || 0) * Number(systemConfig.pointsPerMyr || DEFAULT_SYSTEM_CONFIG.pointsPerMyr));
 }
 
 function pointsToMyr(points) {
-  return Number(points || 0) / POINTS_PER_MYR;
+  return Number(points || 0) / Number(systemConfig.pointsPerMyr || DEFAULT_SYSTEM_CONFIG.pointsPerMyr);
 }
 
 function parseAmount(value) {
@@ -222,6 +232,67 @@ function setWalletBalance(amount) {
   if (balance) balance.textContent = formatMoney(walletBalance);
 }
 
+function updateSystemStatus() {
+  const pill = document.querySelector(".status-pill");
+  if (!pill) return;
+  pill.textContent = systemConfig.maintenanceMode ? "系统维护中" : "系统运行正常";
+  pill.classList.toggle("warning", Boolean(systemConfig.maintenanceMode));
+}
+
+function renderSystemConfig() {
+  setText("#config-rate-summary", `${systemConfig.pointsPerMyr} 积分/RM`);
+  setText("#config-fee-summary", systemConfig.merchantFeeRate || DEFAULT_SYSTEM_CONFIG.merchantFeeRate);
+  setText("#config-limit-summary", formatMoney(systemConfig.dailyTransactionLimit || 0));
+  setText("#config-maintenance-summary", systemConfig.maintenanceMode ? "开启" : "关闭");
+
+  const fields = {
+    "#config-points-rate": systemConfig.pointsPerMyr,
+    "#config-merchant-fee": systemConfig.merchantFeeRate,
+    "#config-daily-limit": systemConfig.dailyTransactionLimit,
+    "#config-notice-template": systemConfig.noticeTemplate,
+  };
+  Object.entries(fields).forEach(([selector, value]) => {
+    const node = document.querySelector(selector);
+    if (node) node.value = value ?? "";
+  });
+  const maintenance = document.querySelector("#config-maintenance");
+  if (maintenance) maintenance.value = systemConfig.maintenanceMode ? "on" : "off";
+  const recharge = document.querySelector("#config-recharge-enabled");
+  if (recharge) recharge.value = systemConfig.rechargeEnabled ? "on" : "off";
+  const withdraw = document.querySelector("#config-withdraw-enabled");
+  if (withdraw) withdraw.value = systemConfig.withdrawEnabled ? "on" : "off";
+  updateSystemStatus();
+}
+
+async function loadSystemConfig() {
+  const snap = await getDoc(doc(db, "systemConfig", "main"));
+  systemConfig = { ...DEFAULT_SYSTEM_CONFIG, ...(snap.exists() ? snap.data() : {}) };
+  renderSystemConfig();
+}
+
+async function saveSystemConfig() {
+  const nextConfig = {
+    pointsPerMyr: Math.max(1, Math.round(parseAmount(document.querySelector("#config-points-rate")?.value) || DEFAULT_SYSTEM_CONFIG.pointsPerMyr)),
+    merchantFeeRate: document.querySelector("#config-merchant-fee")?.value.trim() || DEFAULT_SYSTEM_CONFIG.merchantFeeRate,
+    dailyTransactionLimit: Math.max(0, Math.round(parseAmount(document.querySelector("#config-daily-limit")?.value) || 0)),
+    maintenanceMode: document.querySelector("#config-maintenance")?.value === "on",
+    rechargeEnabled: document.querySelector("#config-recharge-enabled")?.value !== "off",
+    withdrawEnabled: document.querySelector("#config-withdraw-enabled")?.value !== "off",
+    noticeTemplate: document.querySelector("#config-notice-template")?.value.trim() || DEFAULT_SYSTEM_CONFIG.noticeTemplate,
+    updatedBy: currentUser.email,
+    updatedAt: serverTimestamp(),
+  };
+  await setDoc(doc(db, "systemConfig", "main"), nextConfig, { merge: true });
+  systemConfig = { ...DEFAULT_SYSTEM_CONFIG, ...nextConfig };
+  renderSystemConfig();
+  logAuditSafe({
+    module: "系统配置",
+    action: "保存系统配置",
+    target: "systemConfig/main",
+    detail: `兑换比例 ${nextConfig.pointsPerMyr}，费率 ${nextConfig.merchantFeeRate}`,
+  });
+}
+
 function walletRef(user = currentUser) {
   return doc(db, "wallets", user.uid);
 }
@@ -310,6 +381,7 @@ function applyAdminPermissions() {
     "#admin-audit-log": "logs",
     "#admin-marketing-management": "marketing",
     "#admin-support-management": "support",
+    "#admin-system-config": "config",
     "#admin-transaction-management": "transactions",
   };
   Object.entries(sectionPermissions).forEach(([selector, permission]) => {
@@ -1150,7 +1222,7 @@ async function ensureMerchant(user) {
     displayName: user.displayName || "",
     businessName: user.displayName ? `${user.displayName} 的商家` : "未命名商家",
     status: "pending",
-    feeRate: "0.60%",
+    feeRate: systemConfig.merchantFeeRate || DEFAULT_SYSTEM_CONFIG.merchantFeeRate,
     totalReceived: 0,
     settlementBalance: 0,
     refundTotal: 0,
@@ -2543,6 +2615,7 @@ async function loginAs(target) {
         return;
       }
     }
+    await loadSystemConfig().catch(() => {});
     enterRole(target);
     if (target === "user") {
       await attachWallet(currentUser);
@@ -2573,6 +2646,7 @@ function enterRole(target) {
   loginGateway.classList.add("hidden");
   appShell.classList.remove("locked");
   if (target === "admin") {
+    await loadSystemConfig().catch(() => {});
     applyAdminPermissions();
     if (hasAdminPermission("users")) loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
     if (hasAdminPermission("merchants")) loadMerchants().catch((error) => showToast(error.message || "商家数据加载失败"));
@@ -2587,6 +2661,7 @@ function enterRole(target) {
     if (hasAdminPermission("logs")) loadAuditLogs().catch((error) => showToast(error.message || "操作日志加载失败"));
     if (hasAdminPermission("marketing")) loadMarketingItems().catch((error) => showToast(error.message || "营销内容加载失败"));
     if (hasAdminPermission("support")) loadSupportTickets().catch((error) => showToast(error.message || "客服工单加载失败"));
+    if (hasAdminPermission("config")) renderSystemConfig();
     if (hasAdminPermission("transactions")) loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
   }
 }
@@ -2945,6 +3020,10 @@ function handleUserButton(button) {
   }
 
   if (text.includes("充值")) {
+    if (systemConfig.maintenanceMode || !systemConfig.rechargeEnabled) {
+      showToast(systemConfig.maintenanceMode ? "系统维护中，暂不能充值" : "充值通道已关闭");
+      return;
+    }
     if (walletStatus === "frozen") {
       showToast("账户已被冻结，无法充值");
       return;
@@ -2953,7 +3032,7 @@ function handleUserButton(button) {
       "钱包充值",
       `<label class="field-label">充值金额（RM）</label>
        <input class="dialog-input" id="recharge-amount" value="100.00" />
-       <p class="dialog-note">系统会按 RM 1 = 100 积分自动兑换，审批通过后积分才会增加。</p>`,
+       <p class="dialog-note">系统会按 RM 1 = ${systemConfig.pointsPerMyr} 积分自动兑换，审批通过后积分才会增加。</p>`,
       "提交申请",
       async () => {
         const amount = parseAmount(document.querySelector("#recharge-amount").value);
@@ -2971,6 +3050,10 @@ function handleUserButton(button) {
   }
 
   if (button.id === "withdraw-button" || text.includes("提现")) {
+    if (systemConfig.maintenanceMode || !systemConfig.withdrawEnabled) {
+      showToast(systemConfig.maintenanceMode ? "系统维护中，暂不能提现" : "提现通道已关闭");
+      return;
+    }
     if (walletStatus === "frozen") {
       showToast("账户已被冻结，无法提交提现申请");
       return;
@@ -2981,7 +3064,7 @@ function handleUserButton(button) {
        <input class="dialog-input" id="withdraw-amount" value="5000" />
        <label class="field-label">到账银行卡/账户</label>
        <input class="dialog-input" id="withdraw-bank" value="Maybank **** 8821" />
-       <p class="dialog-note">系统会按 100 积分 = RM 1 自动换算，审批通过后才会扣除积分余额。</p>`,
+       <p class="dialog-note">系统会按 ${systemConfig.pointsPerMyr} 积分 = RM 1 自动换算，审批通过后才会扣除积分余额。</p>`,
       "提交申请",
       async () => {
         const amount = parseAmount(document.querySelector("#withdraw-amount").value);
@@ -3004,6 +3087,10 @@ function handleUserButton(button) {
   }
 
   if (text.includes("扫码")) {
+    if (systemConfig.maintenanceMode) {
+      showToast("系统维护中，暂不能付款");
+      return;
+    }
     if (walletStatus === "frozen") {
       showToast("账户已被冻结，无法付款");
       return;
@@ -3306,6 +3393,22 @@ function handleAdminButton(button) {
     loadSupportTickets()
       .then(() => showToast("客服工单已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "refresh-config-button") {
+    if (!requireAdminPermission("config")) return;
+    loadSystemConfig()
+      .then(() => showToast("系统配置已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
+  if (button.id === "save-config-button") {
+    if (!requireAdminPermission("config")) return;
+    saveSystemConfig()
+      .then(() => showToast("系统配置已保存"))
+      .catch((error) => showToast(error.message || "保存失败"));
     return;
   }
 
@@ -3738,6 +3841,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
         .catch((error) => showToast(error.message || "客服工单加载失败"));
       return;
     }
+    if (title === "系统配置") {
+      document.querySelector("#admin-system-config")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadSystemConfig()
+        .then(() => showToast("系统配置已打开"))
+        .catch((error) => showToast(error.message || "系统配置加载失败"));
+      return;
+    }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {
       closeDialog();
       showToast(`${title}已打开`);
@@ -3764,6 +3874,7 @@ onAuthStateChanged(auth, async (user) => {
       return;
     }
   }
+  await loadSystemConfig().catch(() => {});
   enterRole(activeRole);
   if (activeRole === "user") await attachWallet(user);
   if (activeRole === "merchant") await attachMerchant(user);
