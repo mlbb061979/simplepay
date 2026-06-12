@@ -75,6 +75,7 @@ let withdrawalRequestsCache = [];
 let refundRequestsCache = [];
 let settlementRequestsCache = [];
 let adminTransactionsCache = [];
+let riskAlertsCache = [];
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
@@ -683,7 +684,7 @@ async function reviewRechargeRequest(requestId, approved) {
     }
   });
 
-  await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport()]);
+  await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -795,7 +796,7 @@ async function reviewWithdrawalRequest(requestId, approved) {
     }
   });
 
-  await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport()]);
+  await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -971,7 +972,7 @@ async function reviewRefundRequest(requestId, approved) {
     }
   });
 
-  await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport()]);
+  await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -1118,7 +1119,7 @@ async function reviewSettlementRequest(requestId, approved) {
     );
   });
 
-  await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport()]);
+  await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -1132,6 +1133,7 @@ async function setUserFrozen(userId, frozen) {
     { merge: true }
   );
   await loadAdminUsers();
+  loadRiskCenter().catch(() => {});
 }
 
 function transactionItem(type, target, amount) {
@@ -1245,6 +1247,225 @@ async function loadFinanceReport() {
   ];
 
   renderFinanceReport(rows, { rechargeTotal, withdrawTotal, merchantSales, platformFee });
+}
+
+function riskLevelTag(level) {
+  if (level === "high") return '<span class="tag danger">高风险</span>';
+  if (level === "medium") return '<span class="tag warning">中风险</span>';
+  return '<span class="tag success">低风险</span>';
+}
+
+function addRisk(alerts, alert) {
+  alerts.push({
+    id: alert.id,
+    subjectId: alert.subjectId || "",
+    subject: alert.subject || alert.subjectId || "-",
+    subjectType: alert.subjectType,
+    type: alert.type,
+    level: alert.level || "medium",
+    reason: alert.reason,
+    suggestion: alert.suggestion,
+    action: alert.action || "review",
+    status: alert.status || "open",
+  });
+}
+
+function renderRiskAlerts(alerts = riskAlertsCache) {
+  const body = document.querySelector("#admin-risk-body");
+  const highCount = alerts.filter((item) => item.level === "high" && item.status !== "handled").length;
+  const mediumCount = alerts.filter((item) => item.level === "medium" && item.status !== "handled").length;
+  const frozenCount = alerts.filter((item) => item.status === "frozen").length;
+  const openCount = alerts.filter((item) => item.status === "open").length;
+
+  setText("#risk-high-count", String(highCount));
+  setText("#risk-medium-count", String(mediumCount));
+  setText("#risk-frozen-count", String(frozenCount));
+  setText("#risk-open-count", String(openCount));
+  setText("#admin-risk-count", String(highCount + mediumCount));
+
+  if (!body) return;
+  const visibleAlerts = alerts.filter((item) => item.status !== "handled");
+  if (!visibleAlerts.length) {
+    body.innerHTML = '<tr><td colspan="6">暂无风控预警</td></tr>';
+    return;
+  }
+
+  body.innerHTML = visibleAlerts
+    .slice(0, 80)
+    .map(
+      (alert) => `
+        <tr>
+          <td>${alert.subject}</td>
+          <td>${alert.type}</td>
+          <td>${riskLevelTag(alert.level)}</td>
+          <td>${alert.reason}</td>
+          <td>${alert.suggestion}</td>
+          <td>
+            <button class="text-action risk-action" data-action="view" data-risk-id="${alert.id}">查看</button>
+            ${
+              alert.action === "freeze-user"
+                ? `<button class="text-action risk-action" data-action="freeze-user" data-risk-id="${alert.id}">冻结用户</button>`
+                : ""
+            }
+            ${
+              alert.action === "freeze-merchant"
+                ? `<button class="text-action risk-action" data-action="freeze-merchant" data-risk-id="${alert.id}">冻结商家</button>`
+                : ""
+            }
+            <button class="text-action risk-action" data-action="handle" data-risk-id="${alert.id}">已处理</button>
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadRiskCenter() {
+  const body = document.querySelector("#admin-risk-body");
+  if (body) body.innerHTML = '<tr><td colspan="6">正在扫描风控预警...</td></tr>';
+
+  const [walletSnapshot, merchantSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+    getDocs(collection(db, "wallets")),
+    getDocs(collection(db, "merchants")),
+    getDocs(collection(db, "withdrawRequests")),
+    getDocs(collection(db, "refundRequests")),
+    getDocs(collection(db, "settlementRequests")),
+  ]);
+
+  const wallets = walletSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const merchants = merchantSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const withdrawals = withdrawalSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const refunds = refundSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const settlements = settlementSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const alerts = [];
+
+  wallets.forEach((wallet) => {
+    const transactions = Array.isArray(wallet.transactions) ? wallet.transactions : [];
+    const balance = Number(wallet.balance || 0);
+    const largeTxCount = transactions.filter((tx) => Math.abs(parseAmount(tx.amount) || 0) >= 50000).length;
+    if (wallet.status === "frozen") {
+      addRisk(alerts, {
+        id: `frozen-user-${wallet.id}`,
+        subjectId: wallet.id,
+        subject: wallet.email || wallet.displayName || wallet.id,
+        subjectType: "user",
+        type: "账户冻结",
+        level: "high",
+        reason: "用户当前已被冻结",
+        suggestion: "复核身份、交易和提现记录后决定是否解冻",
+        status: "frozen",
+      });
+    }
+    if (balance >= 100000) {
+      addRisk(alerts, {
+        id: `high-balance-${wallet.id}`,
+        subjectId: wallet.id,
+        subject: wallet.email || wallet.displayName || wallet.id,
+        subjectType: "user",
+        type: "高余额账户",
+        level: balance >= 300000 ? "high" : "medium",
+        reason: `钱包余额达到 ${formatMoney(balance)}`,
+        suggestion: "核对充值来源和近期付款对象",
+        action: "freeze-user",
+      });
+    }
+    if (transactions.length >= 20 || largeTxCount >= 3) {
+      addRisk(alerts, {
+        id: `active-user-${wallet.id}`,
+        subjectId: wallet.id,
+        subject: wallet.email || wallet.displayName || wallet.id,
+        subjectType: "user",
+        type: "异常交易频率",
+        level: largeTxCount >= 3 ? "high" : "medium",
+        reason: `近期交易 ${transactions.length} 笔，大额交易 ${largeTxCount} 笔`,
+        suggestion: "检查是否存在刷单、套现或账户共享",
+        action: "freeze-user",
+      });
+    }
+  });
+
+  merchants.forEach((merchant) => {
+    const orders = Array.isArray(merchant.orders) ? merchant.orders : [];
+    const refundsForMerchant = refunds.filter((item) => item.merchantId === merchant.id);
+    const approvedOrders = orders.filter((order) => (order.status || "approved") === "approved");
+    const totalReceived = Number(merchant.totalReceived || 0);
+    const refundRatio = orders.length ? refundsForMerchant.length / orders.length : 0;
+    if (merchant.status === "frozen") {
+      addRisk(alerts, {
+        id: `frozen-merchant-${merchant.id}`,
+        subjectId: merchant.id,
+        subject: merchant.businessName || merchant.email || merchant.id,
+        subjectType: "merchant",
+        type: "商家冻结",
+        level: "high",
+        reason: "商家当前已被冻结",
+        suggestion: "复核资质、退款争议和结算记录",
+        status: "frozen",
+      });
+    }
+    if (refundRatio >= 0.3 && refundsForMerchant.length >= 2) {
+      addRisk(alerts, {
+        id: `refund-ratio-${merchant.id}`,
+        subjectId: merchant.id,
+        subject: merchant.businessName || merchant.email || merchant.id,
+        subjectType: "merchant",
+        type: "退款率偏高",
+        level: refundRatio >= 0.5 ? "high" : "medium",
+        reason: `退款申请 ${refundsForMerchant.length} 笔，订单 ${orders.length} 笔`,
+        suggestion: "检查商品交付、用户投诉和商家资质",
+        action: "freeze-merchant",
+      });
+    }
+    if (totalReceived >= 300000 || approvedOrders.some((order) => Number(order.amount || 0) >= 100000)) {
+      addRisk(alerts, {
+        id: `large-merchant-${merchant.id}`,
+        subjectId: merchant.id,
+        subject: merchant.businessName || merchant.email || merchant.id,
+        subjectType: "merchant",
+        type: "大额收款",
+        level: totalReceived >= 600000 ? "high" : "medium",
+        reason: `累计收款 ${formatMoney(totalReceived)}`,
+        suggestion: "复核商家经营范围和结算银行卡",
+        action: "freeze-merchant",
+      });
+    }
+  });
+
+  withdrawals
+    .filter((item) => item.status === "pending" && Number(item.amount || 0) >= 50000)
+    .forEach((item) =>
+      addRisk(alerts, {
+        id: `withdraw-${item.id}`,
+        subjectId: item.userId,
+        subject: item.email || item.userId,
+        subjectType: "user",
+        type: "大额提现待审",
+        level: Number(item.amount || 0) >= 150000 ? "high" : "medium",
+        reason: `提现申请 ${formatMoney(item.amount || 0)}`,
+        suggestion: "审批前核对充值、付款和银行卡一致性",
+        action: "freeze-user",
+      })
+    );
+
+  settlements
+    .filter((item) => item.status === "pending" && Number(item.amount || 0) >= 100000)
+    .forEach((item) =>
+      addRisk(alerts, {
+        id: `settlement-${item.id}`,
+        subjectId: item.merchantId,
+        subject: item.merchantName || item.merchantEmail || item.merchantId,
+        subjectType: "merchant",
+        type: "大额结算待审",
+        level: Number(item.amount || 0) >= 300000 ? "high" : "medium",
+        reason: `结算申请 ${formatMoney(item.amount || 0)}`,
+        suggestion: "出款前复核订单、退款和商家资料",
+        action: "freeze-merchant",
+      })
+    );
+
+  const riskWeight = { high: 0, medium: 1, low: 2 };
+  riskAlertsCache = alerts.sort((a, b) => (riskWeight[a.level] ?? 1) - (riskWeight[b.level] ?? 1));
+  renderRiskAlerts(riskAlertsCache);
 }
 
 function renderAdminTransactions(filter = adminTransactionFilter) {
@@ -1571,6 +1792,7 @@ function enterRole(target) {
   if (target === "admin") loadRefundRequests().catch((error) => showToast(error.message || "退款申请加载失败"));
   if (target === "admin") loadSettlementRequests().catch((error) => showToast(error.message || "结算申请加载失败"));
   if (target === "admin") loadFinanceReport().catch((error) => showToast(error.message || "财务报表加载失败"));
+  if (target === "admin") loadRiskCenter().catch((error) => showToast(error.message || "风控中心加载失败"));
   if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
@@ -2141,6 +2363,13 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-risk-button") {
+    loadRiskCenter()
+      .then(() => showToast("风控预警已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
     loadMerchants()
       .then(() => showToast("商家列表已刷新"))
@@ -2183,6 +2412,51 @@ function handleAdminButton(button) {
       closeDialog
     );
     return;
+  }
+
+  if (button.classList.contains("risk-action")) {
+    const alert = riskAlertsCache.find((item) => item.id === button.dataset.riskId);
+    if (!alert) {
+      showToast("找不到该风控预警");
+      return;
+    }
+    const action = button.dataset.action;
+    if (action === "view") {
+      openDialog(
+        "风控预警详情",
+        `<div class="detail-list">
+          <p><strong>对象：</strong>${alert.subject}</p>
+          <p><strong>类型：</strong>${alert.type}</p>
+          <p><strong>等级：</strong>${alert.level === "high" ? "高风险" : "中风险"}</p>
+          <p><strong>原因：</strong>${alert.reason}</p>
+          <p><strong>建议：</strong>${alert.suggestion}</p>
+        </div>`,
+        "关闭",
+        closeDialog
+      );
+      return;
+    }
+    if (action === "freeze-user") {
+      setUserFrozen(alert.subjectId, true)
+        .then(() => showToast("用户已冻结，风控已刷新"))
+        .catch((error) => showToast(error.message || "冻结失败"));
+      return;
+    }
+    if (action === "freeze-merchant") {
+      updateMerchantStatus(alert.subjectId, "frozen")
+        .then(() => {
+          loadRiskCenter().catch(() => {});
+          showToast("商家已冻结，风控已刷新");
+        })
+        .catch((error) => showToast(error.message || "冻结失败"));
+      return;
+    }
+    if (action === "handle") {
+      alert.status = "handled";
+      renderRiskAlerts(riskAlertsCache);
+      showToast("该预警已标记为处理");
+      return;
+    }
   }
 
   if (button.classList.contains("merchant-action")) {
@@ -2330,6 +2604,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
       loadFinanceReport()
         .then(() => showToast("财务报表已打开"))
         .catch((error) => showToast(error.message || "财务报表加载失败"));
+      return;
+    }
+    if (title === "风控中心") {
+      document.querySelector("#admin-risk-center")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadRiskCenter()
+        .then(() => showToast("风控中心已打开"))
+        .catch((error) => showToast(error.message || "风控中心加载失败"));
       return;
     }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {

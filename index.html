@@ -159,7 +159,7 @@
                 <div><span>总交易积分</span><strong>286,000,000 积分</strong></div>
                 <div><span>活跃用户</span><strong>128,450</strong></div>
                 <div><span>商家数</span><strong>8,920</strong></div>
-                <div><span>风控预警</span><strong>37</strong></div>
+                <div><span>风控预警</span><strong id="admin-risk-count">0</strong></div>
               </div>
             </article>
             <article class="admin-auth-panel">
@@ -289,6 +289,26 @@
                 </thead>
                 <tbody id="admin-finance-body">
                   <tr><td colspan="5">进入后台后加载财务报表</td></tr>
+                </tbody>
+              </table>
+            </article>
+            <article class="table-panel" id="admin-risk-center">
+              <div class="panel-header">
+                <h2>风控中心</h2>
+                <button class="ghost-action" id="refresh-risk-button" type="button">刷新风控</button>
+              </div>
+              <div class="metric-row finance-metrics">
+                <div><span>高风险</span><strong id="risk-high-count">0</strong></div>
+                <div><span>中风险</span><strong id="risk-medium-count">0</strong></div>
+                <div><span>已冻结账户</span><strong id="risk-frozen-count">0</strong></div>
+                <div><span>待复核</span><strong id="risk-open-count">0</strong></div>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>对象</th><th>类型</th><th>风险等级</th><th>原因</th><th>建议</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-risk-body">
+                  <tr><td colspan="6">进入后台后加载风控预警</td></tr>
                 </tbody>
               </table>
             </article>
