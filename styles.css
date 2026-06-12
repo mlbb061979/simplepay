@@ -206,6 +206,7 @@ th { color: var(--muted); font-size: 12px; font-weight: 700; }
 }
 .filter-chip.active { background: var(--primary); color: #fff; }
 .admin-filter-grid { margin-bottom: 14px; }
+.finance-metrics { margin-bottom: 16px; }
 .sim-scan .scan-frame { height: 120px; }
 .scanner-box {
   position: relative; min-height: 240px; border-radius: 8px; overflow: hidden;

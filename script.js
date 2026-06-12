@@ -683,7 +683,7 @@ async function reviewRechargeRequest(requestId, approved) {
     }
   });
 
-  await Promise.all([loadRechargeRequests(), loadAdminUsers()]);
+  await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -795,7 +795,7 @@ async function reviewWithdrawalRequest(requestId, approved) {
     }
   });
 
-  await Promise.all([loadWithdrawalRequests(), loadAdminUsers()]);
+  await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -971,7 +971,7 @@ async function reviewRefundRequest(requestId, approved) {
     }
   });
 
-  await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers()]);
+  await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -1118,7 +1118,7 @@ async function reviewSettlementRequest(requestId, approved) {
     );
   });
 
-  await Promise.all([loadSettlementRequests(), loadMerchants()]);
+  await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport()]);
   loadAdminTransactions().catch(() => {});
 }
 
@@ -1159,6 +1159,92 @@ function normalizeTransactionRow(row) {
     createdAt: row.createdAt || "",
     detail: row.detail || "",
   };
+}
+
+function sumApproved(docs, field = "amount") {
+  return docs.reduce((total, item) => total + (item.status === "approved" ? Number(item[field] || 0) : 0), 0);
+}
+
+function parseFeeRate(rate = "0.60%") {
+  const value = Number(String(rate).replace("%", "").trim());
+  return Number.isFinite(value) ? value / 100 : 0.006;
+}
+
+function renderFinanceReport(rows = [], metrics = {}) {
+  setText("#finance-recharge-total", formatMoney(metrics.rechargeTotal || 0));
+  setText("#finance-withdraw-total", formatMoney(metrics.withdrawTotal || 0));
+  setText("#finance-merchant-total", formatMoney(metrics.merchantSales || 0));
+  setText("#finance-fee-total", formatMoney(metrics.platformFee || 0));
+
+  const body = document.querySelector("#admin-finance-body");
+  if (!body) return;
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="5">暂无财务数据</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows
+    .map(
+      (row) => `
+        <tr>
+          <td>${row.name}</td>
+          <td>${formatMoney(row.points)}</td>
+          <td>${formatRM(pointsToMyr(row.points))}</td>
+          <td>${row.count}</td>
+          <td>${row.note}</td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadFinanceReport() {
+  const body = document.querySelector("#admin-finance-body");
+  if (body) body.innerHTML = '<tr><td colspan="5">正在加载财务报表...</td></tr>';
+
+  const [merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+    getDocs(collection(db, "merchants")),
+    getDocs(collection(db, "rechargeRequests")),
+    getDocs(collection(db, "withdrawRequests")),
+    getDocs(collection(db, "refundRequests")),
+    getDocs(collection(db, "settlementRequests")),
+  ]);
+
+  const merchants = merchantSnapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const recharges = rechargeSnapshot.docs.map((item) => item.data());
+  const withdrawals = withdrawalSnapshot.docs.map((item) => item.data());
+  const refunds = refundSnapshot.docs.map((item) => item.data());
+  const settlements = settlementSnapshot.docs.map((item) => item.data());
+  const approvedOrders = merchants.flatMap((merchant) =>
+    (merchant.orders || [])
+      .filter((order) => (order.status || "approved") === "approved")
+      .map((order) => ({
+        amount: Number(order.amount || 0),
+        feeRate: parseFeeRate(merchant.feeRate),
+      }))
+  );
+
+  const rechargeTotal = sumApproved(recharges);
+  const withdrawTotal = sumApproved(withdrawals);
+  const refundTotal = sumApproved(refunds);
+  const settlementTotal = sumApproved(settlements);
+  const pendingSettlement = merchants.reduce((total, merchant) => total + Number(merchant.settlementBalance || 0), 0);
+  const merchantSales = approvedOrders.reduce((total, order) => total + order.amount, 0);
+  const platformFee = Math.round(approvedOrders.reduce((total, order) => total + order.amount * order.feeRate, 0));
+  const netInflow = rechargeTotal - withdrawTotal - settlementTotal;
+
+  const rows = [
+    { name: "充值入金", points: rechargeTotal, count: recharges.filter((item) => item.status === "approved").length, note: "后台审批通过的用户充值" },
+    { name: "提现出金", points: withdrawTotal, count: withdrawals.filter((item) => item.status === "approved").length, note: "后台审批通过的用户提现" },
+    { name: "商家收款", points: merchantSales, count: approvedOrders.length, note: "未退款的商家订单收款" },
+    { name: "退款支出", points: refundTotal, count: refunds.filter((item) => item.status === "approved").length, note: "已通过的退款申请" },
+    { name: "商家结算", points: settlementTotal, count: settlements.filter((item) => item.status === "approved").length, note: "已通过的商家结算" },
+    { name: "待结算余额", points: pendingSettlement, count: merchants.length, note: "仍停留在商家账户的待结算积分" },
+    { name: "平台手续费", points: platformFee, count: approvedOrders.length, note: "按商家费率估算的平台收入" },
+    { name: "净资金流入", points: netInflow, count: "-", note: "充值入金 - 提现出金 - 商家结算" },
+  ];
+
+  renderFinanceReport(rows, { rechargeTotal, withdrawTotal, merchantSales, platformFee });
 }
 
 function renderAdminTransactions(filter = adminTransactionFilter) {
@@ -1484,6 +1570,7 @@ function enterRole(target) {
   if (target === "admin") loadWithdrawalRequests().catch((error) => showToast(error.message || "提现申请加载失败"));
   if (target === "admin") loadRefundRequests().catch((error) => showToast(error.message || "退款申请加载失败"));
   if (target === "admin") loadSettlementRequests().catch((error) => showToast(error.message || "结算申请加载失败"));
+  if (target === "admin") loadFinanceReport().catch((error) => showToast(error.message || "财务报表加载失败"));
   if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
@@ -2047,6 +2134,13 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-finance-button") {
+    loadFinanceReport()
+      .then(() => showToast("财务报表已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
     loadMerchants()
       .then(() => showToast("商家列表已刷新"))
@@ -2231,6 +2325,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
   card.addEventListener("click", () => {
     const title = card.querySelector("h2")?.textContent.trim() || "后台模块";
     const desc = card.querySelector("p")?.textContent.trim() || "模块详情";
+    if (title === "财务报表") {
+      document.querySelector("#admin-finance-report")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadFinanceReport()
+        .then(() => showToast("财务报表已打开"))
+        .catch((error) => showToast(error.message || "财务报表加载失败"));
+      return;
+    }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {
       closeDialog();
       showToast(`${title}已打开`);
