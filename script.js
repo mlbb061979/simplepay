@@ -54,9 +54,30 @@ const roleConfig = {
 };
 const OWNER_ADMIN_EMAIL = "stanleyhoh79@gmail.com";
 const POINTS_PER_MYR = 100;
+const ADMIN_MODULES = {
+  users: "用户管理",
+  merchants: "商家管理",
+  transactions: "交易管理",
+  funds: "充值/提现管理",
+  refunds: "退款管理",
+  settlements: "结算管理",
+  finance: "财务报表",
+  risk: "风控中心",
+  kyc: "实名认证/KYC 审核",
+  permissions: "权限管理",
+};
+const ADMIN_ROLE_PRESETS = {
+  owner: Object.keys(ADMIN_MODULES),
+  ops: ["users", "merchants", "transactions", "funds", "refunds", "settlements", "kyc"],
+  finance: ["transactions", "funds", "refunds", "settlements", "finance"],
+  risk: ["users", "transactions", "risk", "kyc"],
+  support: ["users", "transactions", "refunds", "kyc"],
+};
+const MODULE_PERMISSION_BY_TITLE = Object.fromEntries(Object.entries(ADMIN_MODULES).map(([key, title]) => [title, key]));
 
 let activeRole = sessionStorage.getItem("activeRole") || "";
 let currentUser = null;
+let currentAdminProfile = null;
 let walletUnsubscribe = null;
 let merchantUnsubscribe = null;
 let scannerStream = null;
@@ -78,6 +99,7 @@ let settlementRequestsCache = [];
 let kycRequestsCache = [];
 let adminTransactionsCache = [];
 let riskAlertsCache = [];
+let permissionAdminsCache = [];
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
@@ -223,14 +245,43 @@ function isOwnerAdmin(user = currentUser) {
 
 async function isAuthorizedAdmin(user) {
   if (!user?.email) return false;
-  if (isOwnerAdmin(user)) return true;
+  if (isOwnerAdmin(user)) {
+    currentAdminProfile = {
+      email: normalizeEmail(user.email),
+      enabled: true,
+      role: "owner",
+      permissions: ADMIN_ROLE_PRESETS.owner,
+    };
+    return true;
+  }
 
   const adminSnap = await getDoc(adminUserRef(user.email));
   const data = adminSnap.data();
-  return adminSnap.exists() && data?.enabled === true;
+  const allowed = adminSnap.exists() && data?.enabled === true;
+  currentAdminProfile = allowed
+    ? {
+        email: normalizeEmail(user.email),
+        role: data.role || "ops",
+        enabled: true,
+        permissions: Array.isArray(data.permissions) ? data.permissions : ADMIN_ROLE_PRESETS[data.role || "ops"] || [],
+      }
+    : null;
+  return allowed;
 }
 
-async function authorizeAdminEmail(email) {
+function hasAdminPermission(permission) {
+  if (!permission) return true;
+  if (isOwnerAdmin() || currentAdminProfile?.role === "owner") return true;
+  return (currentAdminProfile?.permissions || []).includes(permission);
+}
+
+function requireAdminPermission(permission) {
+  if (hasAdminPermission(permission)) return true;
+  showToast(`权限不足：需要 ${ADMIN_MODULES[permission] || permission} 权限`);
+  return false;
+}
+
+async function authorizeAdminEmail(email, role = "ops") {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !normalizedEmail.includes("@")) {
     throw new Error("请输入正确的管理员邮箱");
@@ -238,13 +289,16 @@ async function authorizeAdminEmail(email) {
   if (!isOwnerAdmin()) {
     throw new Error("只有主后台账号可以授权其他管理员");
   }
+  const nextRole = ADMIN_ROLE_PRESETS[role] ? role : "ops";
 
   await setDoc(adminUserRef(normalizedEmail), {
     email: normalizedEmail,
     enabled: true,
+    role: nextRole,
+    permissions: ADMIN_ROLE_PRESETS[nextRole],
     authorizedBy: currentUser.email,
     updatedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 }
 
 function emptyTransactionRow(message) {
@@ -346,6 +400,128 @@ function renderAdminUsers(users = []) {
       `
     )
     .join("");
+}
+
+function roleLabel(role) {
+  const labels = {
+    owner: "主后台",
+    ops: "运营管理员",
+    finance: "财务管理员",
+    risk: "风控管理员",
+    support: "客服管理员",
+  };
+  return labels[role] || role || "运营管理员";
+}
+
+function renderPermissionAdmins(admins = []) {
+  const body = document.querySelector("#admin-permissions-body");
+  if (!body) return;
+  if (!admins.length) {
+    body.innerHTML = '<tr><td colspan="5">暂无管理员权限数据</td></tr>';
+    return;
+  }
+
+  body.innerHTML = admins
+    .map((admin) => {
+      const permissions = Array.isArray(admin.permissions) ? admin.permissions : ADMIN_ROLE_PRESETS[admin.role || "ops"] || [];
+      const permissionText = admin.role === "owner" ? "全部权限" : permissions.map((item) => ADMIN_MODULES[item] || item).join("、");
+      const locked = admin.role === "owner";
+      return `
+        <tr>
+          <td>${admin.email || admin.id}</td>
+          <td>${roleLabel(admin.role)}</td>
+          <td>${admin.enabled ? '<span class="tag success">已启用</span>' : '<span class="tag danger">已停用</span>'}</td>
+          <td>${permissionText || "-"}</td>
+          <td>
+            ${
+              locked
+                ? "-"
+                : `<button class="text-action permission-action" data-action="edit" data-email="${admin.email}">编辑</button>
+                   <button class="text-action permission-action" data-action="${admin.enabled ? "disable" : "enable"}" data-email="${admin.email}">
+                    ${admin.enabled ? "停用" : "启用"}
+                   </button>`
+            }
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+async function loadPermissionAdmins() {
+  const body = document.querySelector("#admin-permissions-body");
+  if (body) body.innerHTML = '<tr><td colspan="5">正在加载管理员权限...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "adminUsers"));
+  const owner = {
+    id: normalizeEmail(OWNER_ADMIN_EMAIL),
+    email: normalizeEmail(OWNER_ADMIN_EMAIL),
+    role: "owner",
+    enabled: true,
+    permissions: ADMIN_ROLE_PRESETS.owner,
+  };
+  const admins = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((item) => normalizeEmail(item.email || item.id) !== normalizeEmail(OWNER_ADMIN_EMAIL));
+  permissionAdminsCache = [owner, ...admins];
+  renderPermissionAdmins(permissionAdminsCache);
+}
+
+async function updateAdminAccess(email, patch) {
+  if (!isOwnerAdmin()) throw new Error("只有主后台账号可以修改权限");
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || normalizedEmail === normalizeEmail(OWNER_ADMIN_EMAIL)) throw new Error("不能修改主后台账号");
+  await setDoc(
+    adminUserRef(normalizedEmail),
+    {
+      email: normalizedEmail,
+      ...patch,
+      updatedBy: currentUser.email,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await loadPermissionAdmins();
+}
+
+function openPermissionEditor(admin) {
+  const currentPermissions = Array.isArray(admin.permissions) ? admin.permissions : ADMIN_ROLE_PRESETS[admin.role || "ops"] || [];
+  const moduleChecks = Object.entries(ADMIN_MODULES)
+    .filter(([key]) => key !== "permissions")
+    .map(
+      ([key, label]) => `
+        <label class="check-row">
+          <input type="checkbox" class="permission-check" value="${key}" ${currentPermissions.includes(key) ? "checked" : ""} />
+          <span>${label}</span>
+        </label>
+      `
+    )
+    .join("");
+  openDialog(
+    "编辑权限",
+    `<label class="field-label">管理员邮箱</label>
+     <input class="dialog-input" value="${admin.email}" disabled />
+     <label class="field-label">角色</label>
+     <select class="dialog-input" id="permission-role">
+       <option value="ops" ${admin.role === "ops" ? "selected" : ""}>运营管理员</option>
+       <option value="finance" ${admin.role === "finance" ? "selected" : ""}>财务管理员</option>
+       <option value="risk" ${admin.role === "risk" ? "selected" : ""}>风控管理员</option>
+       <option value="support" ${admin.role === "support" ? "selected" : ""}>客服管理员</option>
+     </select>
+     <div class="check-grid">${moduleChecks}</div>`,
+    "保存权限",
+    async () => {
+      const role = document.querySelector("#permission-role").value;
+      const permissions = [...document.querySelectorAll(".permission-check:checked")].map((item) => item.value);
+      try {
+        await updateAdminAccess(admin.email, { role, permissions, enabled: true });
+        closeDialog();
+        showToast("管理员权限已更新");
+      } catch (error) {
+        showToast(error.message || "权限更新失败");
+      }
+    }
+  );
 }
 
 async function loadAdminUsers() {
@@ -1931,7 +2107,7 @@ function enterRole(target) {
   showOnlyView(target);
   pageTitle.textContent = role.title;
   currentRole.textContent = currentUser?.email || role.label;
-  roleName.textContent = role.title;
+  roleName.textContent = target === "admin" && currentAdminProfile ? `${role.title} · ${roleLabel(currentAdminProfile.role)}` : role.title;
   loginGateway.classList.add("hidden");
   appShell.classList.remove("locked");
   if (target === "admin") loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
@@ -1943,6 +2119,7 @@ function enterRole(target) {
   if (target === "admin") loadFinanceReport().catch((error) => showToast(error.message || "财务报表加载失败"));
   if (target === "admin") loadRiskCenter().catch((error) => showToast(error.message || "风控中心加载失败"));
   if (target === "admin") loadKycRequests().catch((error) => showToast(error.message || "实名申请加载失败"));
+  if (target === "admin") loadPermissionAdmins().catch((error) => showToast(error.message || "权限数据加载失败"));
   if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
@@ -2509,6 +2686,7 @@ function handleMerchantButton(button) {
 function handleAdminButton(button) {
   const text = button.textContent.trim();
   if (button.id === "refresh-users-button") {
+    if (!requireAdminPermission("users")) return;
     loadAdminUsers()
       .then(() => showToast("用户列表已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2516,6 +2694,7 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-recharges-button") {
+    if (!requireAdminPermission("funds")) return;
     loadRechargeRequests()
       .then(() => showToast("充值申请已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2523,6 +2702,7 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-withdrawals-button") {
+    if (!requireAdminPermission("funds")) return;
     loadWithdrawalRequests()
       .then(() => showToast("提现申请已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2530,6 +2710,7 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-refunds-button") {
+    if (!requireAdminPermission("refunds")) return;
     loadRefundRequests()
       .then(() => showToast("退款申请已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2537,6 +2718,7 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-settlements-button") {
+    if (!requireAdminPermission("settlements")) return;
     loadSettlementRequests()
       .then(() => showToast("结算申请已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2544,6 +2726,7 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-finance-button") {
+    if (!requireAdminPermission("finance")) return;
     loadFinanceReport()
       .then(() => showToast("财务报表已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2551,6 +2734,7 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-risk-button") {
+    if (!requireAdminPermission("risk")) return;
     loadRiskCenter()
       .then(() => showToast("风控预警已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2558,13 +2742,23 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-kyc-button") {
+    if (!requireAdminPermission("kyc")) return;
     loadKycRequests()
       .then(() => showToast("实名申请已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
     return;
   }
 
+  if (button.id === "refresh-permissions-button") {
+    if (!requireAdminPermission("permissions")) return;
+    loadPermissionAdmins()
+      .then(() => showToast("权限数据已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
+    if (!requireAdminPermission("merchants")) return;
     loadMerchants()
       .then(() => showToast("商家列表已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2572,6 +2766,7 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "refresh-transactions-button") {
+    if (!requireAdminPermission("transactions")) return;
     loadAdminTransactions()
       .then(() => showToast("交易流水已刷新"))
       .catch((error) => showToast(error.message || "刷新失败"));
@@ -2579,6 +2774,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("transaction-filter")) {
+    if (!requireAdminPermission("transactions")) return;
     adminTransactionFilter = button.dataset.filter || "all";
     document.querySelectorAll(".transaction-filter").forEach((item) => item.classList.toggle("active", item === button));
     renderAdminTransactions(adminTransactionFilter);
@@ -2586,6 +2782,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("transaction-action")) {
+    if (!requireAdminPermission("transactions")) return;
     const transaction = adminTransactionsCache.find((item) => item.id === button.dataset.transactionId);
     if (!transaction) {
       showToast("找不到该流水");
@@ -2609,6 +2806,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("risk-action")) {
+    if (!requireAdminPermission("risk")) return;
     const alert = riskAlertsCache.find((item) => item.id === button.dataset.riskId);
     if (!alert) {
       showToast("找不到该风控预警");
@@ -2654,6 +2852,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("merchant-action")) {
+    if (!requireAdminPermission("merchants")) return;
     const merchantId = button.dataset.merchantId;
     const action = button.dataset.action;
     const merchant = merchantsCache.find((item) => item.id === merchantId);
@@ -2687,6 +2886,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("recharge-action")) {
+    if (!requireAdminPermission("funds")) return;
     const approved = button.dataset.action === "approve";
     reviewRechargeRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "充值申请已通过" : "充值申请已拒绝"))
@@ -2695,6 +2895,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("withdrawal-action")) {
+    if (!requireAdminPermission("funds")) return;
     const approved = button.dataset.action === "approve";
     reviewWithdrawalRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "提现申请已通过" : "提现申请已拒绝"))
@@ -2703,6 +2904,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("refund-action")) {
+    if (!requireAdminPermission("refunds")) return;
     const approved = button.dataset.action === "approve";
     reviewRefundRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "退款申请已通过，积分已退回用户" : "退款申请已拒绝"))
@@ -2711,6 +2913,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("settlement-action")) {
+    if (!requireAdminPermission("settlements")) return;
     const approved = button.dataset.action === "approve";
     reviewSettlementRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "结算申请已通过" : "结算申请已拒绝，积分已退回待结算"))
@@ -2719,6 +2922,7 @@ function handleAdminButton(button) {
   }
 
   if (button.classList.contains("kyc-action")) {
+    if (!requireAdminPermission("kyc")) return;
     const approved = button.dataset.action === "approve";
     reviewKycRequest(button.dataset.requestId, approved)
       .then(() => showToast(approved ? "实名审核已通过" : "实名审核已拒绝"))
@@ -2726,7 +2930,26 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.classList.contains("permission-action")) {
+    if (!requireAdminPermission("permissions")) return;
+    const admin = permissionAdminsCache.find((item) => normalizeEmail(item.email) === normalizeEmail(button.dataset.email));
+    if (!admin) {
+      showToast("找不到管理员资料");
+      return;
+    }
+    const action = button.dataset.action;
+    if (action === "edit") {
+      openPermissionEditor(admin);
+      return;
+    }
+    updateAdminAccess(admin.email, { enabled: action === "enable" })
+      .then(() => showToast(action === "enable" ? "管理员已启用" : "管理员已停用"))
+      .catch((error) => showToast(error.message || "权限更新失败"));
+    return;
+  }
+
   if (button.classList.contains("admin-user-action")) {
+    if (!requireAdminPermission("users")) return;
     const userId = button.dataset.userId;
     const action = button.dataset.action;
     const user = adminUsersCache.find((item) => item.id === userId);
@@ -2755,11 +2978,15 @@ function handleAdminButton(button) {
   }
 
   if (button.id === "authorize-admin-button") {
+    if (!requireAdminPermission("permissions")) return;
     const input = document.querySelector("#admin-email-input");
-    authorizeAdminEmail(input?.value)
+    const role = document.querySelector("#admin-role-select")?.value || "ops";
+    const email = normalizeEmail(input?.value);
+    authorizeAdminEmail(email, role)
       .then(() => {
-        showToast(`已授权 ${normalizeEmail(input.value)} 登录后台`);
+        showToast(`已授权 ${email} 登录后台`);
         input.value = "";
+        loadPermissionAdmins().catch(() => {});
       })
       .catch((error) => showToast(error.message || "授权失败"));
     return;
@@ -2803,6 +3030,8 @@ document.querySelectorAll(".module-card").forEach((card) => {
   card.addEventListener("click", () => {
     const title = card.querySelector("h2")?.textContent.trim() || "后台模块";
     const desc = card.querySelector("p")?.textContent.trim() || "模块详情";
+    const permission = MODULE_PERMISSION_BY_TITLE[title];
+    if (permission && !requireAdminPermission(permission)) return;
     if (title === "财务报表") {
       document.querySelector("#admin-finance-report")?.scrollIntoView({ behavior: "smooth", block: "start" });
       loadFinanceReport()
@@ -2822,6 +3051,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
       loadKycRequests()
         .then(() => showToast("KYC 审核已打开"))
         .catch((error) => showToast(error.message || "实名申请加载失败"));
+      return;
+    }
+    if (title === "权限管理") {
+      document.querySelector("#admin-permission-management")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadPermissionAdmins()
+        .then(() => showToast("权限管理已打开"))
+        .catch((error) => showToast(error.message || "权限数据加载失败"));
       return;
     }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {

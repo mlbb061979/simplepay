@@ -174,6 +174,12 @@
               </div>
               <div class="admin-auth-form">
                 <input class="dialog-input" id="admin-email-input" type="email" placeholder="输入要授权的管理员邮箱" />
+                <select class="dialog-input" id="admin-role-select">
+                  <option value="ops">运营管理员</option>
+                  <option value="finance">财务管理员</option>
+                  <option value="risk">风控管理员</option>
+                  <option value="support">客服管理员</option>
+                </select>
                 <button class="primary-action" id="authorize-admin-button" type="button">授权后台登录</button>
               </div>
             </article>
@@ -328,6 +334,20 @@
                 </thead>
                 <tbody id="admin-kyc-body">
                   <tr><td colspan="6">进入后台后加载实名申请</td></tr>
+                </tbody>
+              </table>
+            </article>
+            <article class="table-panel" id="admin-permission-management">
+              <div class="panel-header">
+                <h2>权限管理</h2>
+                <button class="ghost-action" id="refresh-permissions-button" type="button">刷新权限</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>管理员</th><th>角色</th><th>状态</th><th>权限范围</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-permissions-body">
+                  <tr><td colspan="5">进入后台后加载管理员权限</td></tr>
                 </tbody>
               </table>
             </article>
