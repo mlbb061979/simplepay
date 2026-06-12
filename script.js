@@ -65,6 +65,7 @@ const ADMIN_MODULES = {
   risk: "风控中心",
   kyc: "实名认证/KYC 审核",
   permissions: "权限管理",
+  logs: "操作日志",
 };
 const ADMIN_ROLE_PRESETS = {
   owner: Object.keys(ADMIN_MODULES),
@@ -100,6 +101,7 @@ let kycRequestsCache = [];
 let adminTransactionsCache = [];
 let riskAlertsCache = [];
 let permissionAdminsCache = [];
+let auditLogsCache = [];
 let adminTransactionFilter = "all";
 
 function formatMoney(amount) {
@@ -278,7 +280,41 @@ function hasAdminPermission(permission) {
 function requireAdminPermission(permission) {
   if (hasAdminPermission(permission)) return true;
   showToast(`权限不足：需要 ${ADMIN_MODULES[permission] || permission} 权限`);
+  logAuditSafe({
+    module: "权限管理",
+    action: "权限拦截",
+    target: ADMIN_MODULES[permission] || permission,
+    detail: `管理员缺少 ${permission} 权限`,
+    result: "blocked",
+  });
   return false;
+}
+
+function applyAdminPermissions() {
+  if (activeRole !== "admin") return;
+  const sectionPermissions = {
+    "#admin-user-management": "users",
+    "#admin-merchant-management": "merchants",
+    "#admin-recharge-management": "funds",
+    "#admin-withdraw-management": "funds",
+    "#admin-refund-management": "refunds",
+    "#admin-settlement-management": "settlements",
+    "#admin-finance-report": "finance",
+    "#admin-risk-center": "risk",
+    "#admin-kyc-management": "kyc",
+    "#admin-permission-management": "permissions",
+    "#admin-audit-log": "logs",
+    "#admin-transaction-management": "transactions",
+  };
+  Object.entries(sectionPermissions).forEach(([selector, permission]) => {
+    document.querySelector(selector)?.classList.toggle("hidden", !hasAdminPermission(permission));
+  });
+  document.querySelector(".admin-auth-panel")?.classList.toggle("hidden", !hasAdminPermission("permissions"));
+  document.querySelectorAll(".module-card").forEach((card) => {
+    const title = card.querySelector("h2")?.textContent.trim();
+    const permission = MODULE_PERMISSION_BY_TITLE[title];
+    if (permission) card.classList.toggle("hidden", !hasAdminPermission(permission));
+  });
 }
 
 async function authorizeAdminEmail(email, role = "ops") {
@@ -299,6 +335,12 @@ async function authorizeAdminEmail(email, role = "ops") {
     authorizedBy: currentUser.email,
     updatedAt: serverTimestamp(),
   }, { merge: true });
+  logAuditSafe({
+    module: "权限管理",
+    action: "授权管理员",
+    target: normalizedEmail,
+    detail: `角色：${roleLabel(nextRole)}`,
+  });
 }
 
 function emptyTransactionRow(message) {
@@ -448,6 +490,74 @@ function renderPermissionAdmins(admins = []) {
     .join("");
 }
 
+function auditResultTag(result) {
+  if (result === "success") return '<span class="tag success">成功</span>';
+  if (result === "blocked") return '<span class="tag warning">拦截</span>';
+  return '<span class="tag danger">失败</span>';
+}
+
+function renderAuditLogs(logs = []) {
+  const body = document.querySelector("#admin-audit-body");
+  if (!body) return;
+  if (!logs.length) {
+    body.innerHTML = '<tr><td colspan="7">暂无操作日志</td></tr>';
+    return;
+  }
+
+  body.innerHTML = logs
+    .slice(0, 120)
+    .map(
+      (log) => `
+        <tr>
+          <td>${log.time || "-"}</td>
+          <td>${log.actor || "-"}</td>
+          <td>${log.module || "-"}</td>
+          <td>${log.action || "-"}</td>
+          <td>${log.target || "-"}</td>
+          <td>${auditResultTag(log.result || "success")}</td>
+          <td><button class="text-action audit-action" data-log-id="${log.id}">查看</button></td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadAuditLogs() {
+  const body = document.querySelector("#admin-audit-body");
+  if (body) body.innerHTML = '<tr><td colspan="7">正在加载操作日志...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "auditLogs"));
+  auditLogsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderAuditLogs(auditLogsCache);
+}
+
+async function writeAuditLog({ module, action, target = "-", detail = "-", result = "success" }) {
+  if (!currentUser?.email || activeRole !== "admin") return;
+  const logId = `L${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await setDoc(doc(db, "auditLogs", logId), {
+    actor: currentUser.email,
+    actorRole: currentAdminProfile?.role || (isOwnerAdmin() ? "owner" : "admin"),
+    module,
+    action,
+    target,
+    detail,
+    result,
+    time: "刚刚",
+    createdAt: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+function logAuditSafe(payload) {
+  writeAuditLog(payload)
+    .then(() => {
+      if (hasAdminPermission("logs")) loadAuditLogs().catch(() => {});
+    })
+    .catch(() => {});
+}
+
 async function loadPermissionAdmins() {
   const body = document.querySelector("#admin-permissions-body");
   if (body) body.innerHTML = '<tr><td colspan="5">正在加载管理员权限...</td></tr>';
@@ -482,6 +592,12 @@ async function updateAdminAccess(email, patch) {
     { merge: true }
   );
   await loadPermissionAdmins();
+  logAuditSafe({
+    module: "权限管理",
+    action: "修改管理员权限",
+    target: normalizedEmail,
+    detail: JSON.stringify(patch),
+  });
 }
 
 function openPermissionEditor(admin) {
@@ -782,6 +898,12 @@ async function updateMerchantStatus(merchantId, status) {
     { merge: true }
   );
   await loadMerchants();
+  logAuditSafe({
+    module: "商家管理",
+    action: "更新商家状态",
+    target: merchantId,
+    detail: `状态：${status}`,
+  });
 }
 
 function renderRechargeRequests(requests = []) {
@@ -890,6 +1012,12 @@ async function reviewRechargeRequest(requestId, approved) {
 
   await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
+  logAuditSafe({
+    module: "充值/提现管理",
+    action: approved ? "通过充值申请" : "拒绝充值申请",
+    target: requestId,
+    detail: `${request.email || request.userId} / ${formatMoney(request.amount || 0)}`,
+  });
 }
 
 function renderWithdrawalRequests(requests = []) {
@@ -1002,6 +1130,12 @@ async function reviewWithdrawalRequest(requestId, approved) {
 
   await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
+  logAuditSafe({
+    module: "充值/提现管理",
+    action: approved ? "通过提现申请" : "拒绝提现申请",
+    target: requestId,
+    detail: `${request.email || request.userId} / ${formatMoney(request.amount || 0)}`,
+  });
 }
 
 function renderRefundRequests(requests = []) {
@@ -1178,6 +1312,12 @@ async function reviewRefundRequest(requestId, approved) {
 
   await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
+  logAuditSafe({
+    module: "退款管理",
+    action: approved ? "通过退款申请" : "拒绝退款申请",
+    target: requestId,
+    detail: `${request.customerEmail || request.customerId} / ${formatMoney(request.amount || 0)}`,
+  });
 }
 
 function renderSettlementRequests(requests = []) {
@@ -1325,6 +1465,12 @@ async function reviewSettlementRequest(requestId, approved) {
 
   await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport(), loadRiskCenter()]);
   loadAdminTransactions().catch(() => {});
+  logAuditSafe({
+    module: "结算管理",
+    action: approved ? "通过结算申请" : "拒绝结算申请",
+    target: requestId,
+    detail: `${request.merchantName || request.merchantId} / ${formatMoney(request.amount || 0)}`,
+  });
 }
 
 function renderKycRequests(requests = []) {
@@ -1431,6 +1577,12 @@ async function reviewKycRequest(requestId, approved) {
   );
 
   await Promise.all([loadKycRequests(), loadAdminUsers(), loadRiskCenter()]);
+  logAuditSafe({
+    module: "实名认证/KYC 审核",
+    action: approved ? "通过实名申请" : "拒绝实名申请",
+    target: requestId,
+    detail: `${request.email || request.userId} / ${request.fullName || "-"}`,
+  });
 }
 
 async function setUserFrozen(userId, frozen) {
@@ -1444,6 +1596,12 @@ async function setUserFrozen(userId, frozen) {
   );
   await loadAdminUsers();
   loadRiskCenter().catch(() => {});
+  logAuditSafe({
+    module: "用户管理",
+    action: frozen ? "冻结用户" : "解冻用户",
+    target: userId,
+    detail: `状态：${frozen ? "frozen" : "active"}`,
+  });
 }
 
 function transactionItem(type, target, amount) {
@@ -2096,6 +2254,14 @@ async function loginAs(target) {
     enterRole(target);
     if (target === "user") await attachWallet(currentUser);
     if (target === "merchant") await attachMerchant(currentUser);
+    if (target === "admin") {
+      logAuditSafe({
+        module: "登录",
+        action: "管理员登录",
+        target: currentUser.email,
+        detail: `角色：${roleLabel(currentAdminProfile?.role)}`,
+      });
+    }
     showToast(`${roleConfig[target].title}登录成功`);
   } catch (error) {
     showToast(`Google 登录失败：${error.message}`);
@@ -2110,20 +2276,34 @@ function enterRole(target) {
   roleName.textContent = target === "admin" && currentAdminProfile ? `${role.title} · ${roleLabel(currentAdminProfile.role)}` : role.title;
   loginGateway.classList.add("hidden");
   appShell.classList.remove("locked");
-  if (target === "admin") loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
-  if (target === "admin") loadMerchants().catch((error) => showToast(error.message || "商家数据加载失败"));
-  if (target === "admin") loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
-  if (target === "admin") loadWithdrawalRequests().catch((error) => showToast(error.message || "提现申请加载失败"));
-  if (target === "admin") loadRefundRequests().catch((error) => showToast(error.message || "退款申请加载失败"));
-  if (target === "admin") loadSettlementRequests().catch((error) => showToast(error.message || "结算申请加载失败"));
-  if (target === "admin") loadFinanceReport().catch((error) => showToast(error.message || "财务报表加载失败"));
-  if (target === "admin") loadRiskCenter().catch((error) => showToast(error.message || "风控中心加载失败"));
-  if (target === "admin") loadKycRequests().catch((error) => showToast(error.message || "实名申请加载失败"));
-  if (target === "admin") loadPermissionAdmins().catch((error) => showToast(error.message || "权限数据加载失败"));
-  if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
+  if (target === "admin") {
+    applyAdminPermissions();
+    if (hasAdminPermission("users")) loadAdminUsers().catch((error) => showToast(error.message || "用户数据加载失败"));
+    if (hasAdminPermission("merchants")) loadMerchants().catch((error) => showToast(error.message || "商家数据加载失败"));
+    if (hasAdminPermission("funds")) loadRechargeRequests().catch((error) => showToast(error.message || "充值申请加载失败"));
+    if (hasAdminPermission("funds")) loadWithdrawalRequests().catch((error) => showToast(error.message || "提现申请加载失败"));
+    if (hasAdminPermission("refunds")) loadRefundRequests().catch((error) => showToast(error.message || "退款申请加载失败"));
+    if (hasAdminPermission("settlements")) loadSettlementRequests().catch((error) => showToast(error.message || "结算申请加载失败"));
+    if (hasAdminPermission("finance")) loadFinanceReport().catch((error) => showToast(error.message || "财务报表加载失败"));
+    if (hasAdminPermission("risk")) loadRiskCenter().catch((error) => showToast(error.message || "风控中心加载失败"));
+    if (hasAdminPermission("kyc")) loadKycRequests().catch((error) => showToast(error.message || "实名申请加载失败"));
+    if (hasAdminPermission("permissions")) loadPermissionAdmins().catch((error) => showToast(error.message || "权限数据加载失败"));
+    if (hasAdminPermission("logs")) loadAuditLogs().catch((error) => showToast(error.message || "操作日志加载失败"));
+    if (hasAdminPermission("transactions")) loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
+  }
 }
 
 async function logout() {
+  const wasAdmin = activeRole === "admin";
+  const logoutEmail = currentUser?.email || "";
+  if (wasAdmin) {
+    logAuditSafe({
+      module: "登录",
+      action: "管理员退出",
+      target: logoutEmail,
+      detail: "主动退出登录",
+    });
+  }
   if (walletUnsubscribe) walletUnsubscribe();
   if (merchantUnsubscribe) merchantUnsubscribe();
   walletUnsubscribe = null;
@@ -2757,6 +2937,14 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-audit-button") {
+    if (!requireAdminPermission("logs")) return;
+    loadAuditLogs()
+      .then(() => showToast("操作日志已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
     if (!requireAdminPermission("merchants")) return;
     loadMerchants()
@@ -2798,6 +2986,31 @@ function handleAdminButton(button) {
         <p><strong>来源：</strong>${transaction.source || "-"}</p>
         <p><strong>状态：</strong>${transaction.status || "成功"}</p>
         <p><strong>详情：</strong>${transaction.detail || "-"}</p>
+      </div>`,
+      "关闭",
+      closeDialog
+    );
+    return;
+  }
+
+  if (button.classList.contains("audit-action")) {
+    if (!requireAdminPermission("logs")) return;
+    const log = auditLogsCache.find((item) => item.id === button.dataset.logId);
+    if (!log) {
+      showToast("找不到日志详情");
+      return;
+    }
+    openDialog(
+      "操作日志详情",
+      `<div class="detail-list">
+        <p><strong>日志号：</strong>${log.id}</p>
+        <p><strong>操作者：</strong>${log.actor || "-"}</p>
+        <p><strong>角色：</strong>${roleLabel(log.actorRole)}</p>
+        <p><strong>模块：</strong>${log.module || "-"}</p>
+        <p><strong>动作：</strong>${log.action || "-"}</p>
+        <p><strong>对象：</strong>${log.target || "-"}</p>
+        <p><strong>结果：</strong>${log.result || "success"}</p>
+        <p><strong>详情：</strong>${log.detail || "-"}</p>
       </div>`,
       "关闭",
       closeDialog
@@ -3058,6 +3271,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
       loadPermissionAdmins()
         .then(() => showToast("权限管理已打开"))
         .catch((error) => showToast(error.message || "权限数据加载失败"));
+      return;
+    }
+    if (title === "操作日志") {
+      document.querySelector("#admin-audit-log")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadAuditLogs()
+        .then(() => showToast("操作日志已打开"))
+        .catch((error) => showToast(error.message || "操作日志加载失败"));
       return;
     }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {
