@@ -100,6 +100,11 @@
               <p id="receive-code-label">登录后自动生成专属收款码</p>
               <button class="text-action" id="copy-receive-code" type="button">复制收款码</button>
             </article>
+            <article class="action-panel">
+              <h2>实名认证</h2>
+              <p class="dialog-note" id="user-kyc-status">登录后查看实名状态</p>
+              <button class="primary-action" id="submit-kyc-button" type="button">提交实名</button>
+            </article>
             <article class="table-panel full">
               <div class="panel-header">
                 <h2>交易记录</h2>
@@ -195,10 +200,10 @@
               </div>
               <table>
                 <thead>
-                  <tr><th>用户</th><th>余额</th><th>交易数</th><th>状态</th><th>操作</th></tr>
+                  <tr><th>用户</th><th>余额</th><th>实名</th><th>交易数</th><th>状态</th><th>操作</th></tr>
                 </thead>
                 <tbody id="admin-users-body">
-                  <tr><td colspan="5">进入后台后加载用户数据</td></tr>
+                  <tr><td colspan="6">进入后台后加载用户数据</td></tr>
                 </tbody>
               </table>
             </article>
@@ -309,6 +314,20 @@
                 </thead>
                 <tbody id="admin-risk-body">
                   <tr><td colspan="6">进入后台后加载风控预警</td></tr>
+                </tbody>
+              </table>
+            </article>
+            <article class="table-panel" id="admin-kyc-management">
+              <div class="panel-header">
+                <h2>实名认证/KYC 审核</h2>
+                <button class="ghost-action" id="refresh-kyc-button" type="button">刷新实名</button>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>用户</th><th>姓名</th><th>证件号</th><th>手机号</th><th>状态</th><th>操作</th></tr>
+                </thead>
+                <tbody id="admin-kyc-body">
+                  <tr><td colspan="6">进入后台后加载实名申请</td></tr>
                 </tbody>
               </table>
             </article>

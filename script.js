@@ -65,6 +65,7 @@ let dynamicQrId = 6130;
 let toastTimer;
 let walletBalance = 0;
 let walletStatus = "active";
+let walletKycStatus = "unsubmitted";
 let merchantStatus = "pending";
 let currentMerchant = null;
 let userTransactions = [];
@@ -74,6 +75,7 @@ let rechargeRequestsCache = [];
 let withdrawalRequestsCache = [];
 let refundRequestsCache = [];
 let settlementRequestsCache = [];
+let kycRequestsCache = [];
 let adminTransactionsCache = [];
 let riskAlertsCache = [];
 let adminTransactionFilter = "all";
@@ -292,11 +294,36 @@ function merchantStatusLabel(status) {
   return '<span class="tag warning">待审核</span>';
 }
 
+function kycStatusLabel(status) {
+  if (status === "approved") return '<span class="tag success">已实名</span>';
+  if (status === "pending") return '<span class="tag warning">待审核</span>';
+  if (status === "rejected") return '<span class="tag danger">已拒绝</span>';
+  return '<span class="tag warning">未提交</span>';
+}
+
+function updateUserKycStatus(status = walletKycStatus) {
+  walletKycStatus = status || "unsubmitted";
+  const node = document.querySelector("#user-kyc-status");
+  if (node) {
+    const textMap = {
+      approved: "实名状态：已通过",
+      pending: "实名状态：待后台审核",
+      rejected: "实名状态：已拒绝，请重新提交",
+      unsubmitted: "实名状态：未提交",
+    };
+    node.textContent = textMap[walletKycStatus] || textMap.unsubmitted;
+  }
+  const button = document.querySelector("#submit-kyc-button");
+  if (button) {
+    button.textContent = walletKycStatus === "approved" ? "查看实名" : walletKycStatus === "pending" ? "查看申请" : "提交实名";
+  }
+}
+
 function renderAdminUsers(users = []) {
   const body = document.querySelector("#admin-users-body");
   if (!body) return;
   if (!users.length) {
-    body.innerHTML = '<tr><td colspan="5">暂无用户钱包数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="6">暂无用户钱包数据</td></tr>';
     return;
   }
 
@@ -306,6 +333,7 @@ function renderAdminUsers(users = []) {
         <tr>
           <td>${user.email || user.displayName || user.id}</td>
           <td>${formatMoney(user.balance || 0)}</td>
+          <td>${kycStatusLabel(user.kycStatus)}</td>
           <td>${(user.transactions || []).length}</td>
           <td>${statusTag(user.status)}</td>
           <td>
@@ -1123,6 +1151,112 @@ async function reviewSettlementRequest(requestId, approved) {
   loadAdminTransactions().catch(() => {});
 }
 
+function renderKycRequests(requests = []) {
+  const body = document.querySelector("#admin-kyc-body");
+  if (!body) return;
+  if (!requests.length) {
+    body.innerHTML = '<tr><td colspan="6">暂无实名申请</td></tr>';
+    return;
+  }
+
+  body.innerHTML = requests
+    .map(
+      (request) => `
+        <tr>
+          <td>${request.email || request.userId}</td>
+          <td>${request.fullName || "-"}</td>
+          <td>${request.idNumber || "-"}</td>
+          <td>${request.phone || "-"}</td>
+          <td>${kycStatusLabel(request.status || "pending")}</td>
+          <td>
+            ${
+              request.status === "pending"
+                ? `<button class="text-action kyc-action" data-action="approve" data-request-id="${request.id}">通过</button>
+                   <button class="text-action kyc-action" data-action="reject" data-request-id="${request.id}">拒绝</button>`
+                : "-"
+            }
+          </td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+async function loadKycRequests() {
+  const body = document.querySelector("#admin-kyc-body");
+  if (body) body.innerHTML = '<tr><td colspan="6">正在加载实名申请...</td></tr>';
+
+  const snapshot = await getDocs(collection(db, "kycRequests"));
+  kycRequestsCache = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  renderKycRequests(kycRequestsCache);
+}
+
+async function submitKycRequest(fullName, idNumber, phone) {
+  if (!currentUser) throw new Error("请先登录用户账号");
+  if (walletStatus === "frozen") throw new Error("账户已被冻结，无法提交实名");
+  const requestId = currentUser.uid;
+  await setDoc(
+    doc(db, "kycRequests", requestId),
+    {
+      userId: currentUser.uid,
+      email: currentUser.email,
+      displayName: currentUser.displayName || "",
+      fullName,
+      idNumber,
+      phone,
+      status: "pending",
+      time: "刚刚",
+      createdAt: new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await setDoc(
+    walletRef(),
+    {
+      kycStatus: "pending",
+      kycFullName: fullName,
+      kycIdNumber: idNumber,
+      kycPhone: phone,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+async function reviewKycRequest(requestId, approved) {
+  const request = kycRequestsCache.find((item) => item.id === requestId);
+  if (!request) throw new Error("找不到实名申请");
+  if (request.status !== "pending") throw new Error("该实名申请已处理");
+
+  const status = approved ? "approved" : "rejected";
+  await setDoc(
+    doc(db, "kycRequests", requestId),
+    {
+      status,
+      reviewedBy: currentUser.email,
+      reviewedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await setDoc(
+    doc(db, "wallets", request.userId),
+    {
+      kycStatus: status,
+      kycFullName: request.fullName || "",
+      kycIdNumber: request.idNumber || "",
+      kycPhone: request.phone || "",
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await Promise.all([loadKycRequests(), loadAdminUsers(), loadRiskCenter()]);
+}
+
 async function setUserFrozen(userId, frozen) {
   await setDoc(
     doc(db, "wallets", userId),
@@ -1366,6 +1500,19 @@ async function loadRiskCenter() {
         level: balance >= 300000 ? "high" : "medium",
         reason: `钱包余额达到 ${formatMoney(balance)}`,
         suggestion: "核对充值来源和近期付款对象",
+        action: "freeze-user",
+      });
+    }
+    if ((wallet.kycStatus || "unsubmitted") !== "approved" && balance >= 30000) {
+      addRisk(alerts, {
+        id: `kyc-risk-${wallet.id}`,
+        subjectId: wallet.id,
+        subject: wallet.email || wallet.displayName || wallet.id,
+        subjectType: "user",
+        type: "未实名高余额",
+        level: balance >= 100000 ? "high" : "medium",
+        reason: `实名状态为 ${wallet.kycStatus || "未提交"}，余额 ${formatMoney(balance)}`,
+        suggestion: "要求用户完成 KYC 后再放开大额交易",
         action: "freeze-user",
       });
     }
@@ -1656,6 +1803,7 @@ async function ensureWallet(user) {
       role: "user",
       transactions: [],
       status: "active",
+      kycStatus: "unsubmitted",
       updatedAt: serverTimestamp(),
     });
     return;
@@ -1675,6 +1823,7 @@ async function attachWallet(user) {
     const data = snapshot.data() || {};
     setWalletBalance(data.balance || 0);
     walletStatus = data.status || "active";
+    updateUserKycStatus(data.kycStatus || "unsubmitted");
     userTransactions = Array.isArray(data.transactions) ? data.transactions : [];
     renderUserTransactions(userTransactions);
     updateReceiveQr(data.receiveCode || createReceiveCode(user));
@@ -1793,6 +1942,7 @@ function enterRole(target) {
   if (target === "admin") loadSettlementRequests().catch((error) => showToast(error.message || "结算申请加载失败"));
   if (target === "admin") loadFinanceReport().catch((error) => showToast(error.message || "财务报表加载失败"));
   if (target === "admin") loadRiskCenter().catch((error) => showToast(error.message || "风控中心加载失败"));
+  if (target === "admin") loadKycRequests().catch((error) => showToast(error.message || "实名申请加载失败"));
   if (target === "admin") loadAdminTransactions().catch((error) => showToast(error.message || "交易流水加载失败"));
 }
 
@@ -2041,6 +2191,43 @@ async function confirmScanPayment() {
 
 function handleUserButton(button) {
   const text = button.textContent.trim();
+  if (button.id === "submit-kyc-button") {
+    const currentDataNote =
+      walletKycStatus === "approved"
+        ? "当前账号已完成实名，如需变更资料可重新提交后台审核。"
+        : walletKycStatus === "pending"
+          ? "当前实名申请正在等待后台审核，重新提交会覆盖旧资料。"
+          : "请填写真实资料提交后台审核。";
+    openDialog(
+      "实名认证",
+      `<label class="field-label">真实姓名</label>
+       <input class="dialog-input" id="kyc-full-name" placeholder="例如：Lee Wei" />
+       <label class="field-label">证件号码</label>
+       <input class="dialog-input" id="kyc-id-number" placeholder="身份证/护照号码" />
+       <label class="field-label">手机号</label>
+       <input class="dialog-input" id="kyc-phone" placeholder="+60..." />
+       <p class="dialog-note">${currentDataNote}</p>`,
+      "提交审核",
+      async () => {
+        const fullName = document.querySelector("#kyc-full-name").value.trim();
+        const idNumber = document.querySelector("#kyc-id-number").value.trim();
+        const phone = document.querySelector("#kyc-phone").value.trim();
+        if (!fullName || !idNumber || !phone) {
+          showToast("请完整填写实名资料");
+          return;
+        }
+        try {
+          await submitKycRequest(fullName, idNumber, phone);
+          closeDialog();
+          showToast("实名资料已提交后台审核");
+        } catch (error) {
+          showToast(error.message || "实名提交失败");
+        }
+      }
+    );
+    return;
+  }
+
   if (button.id === "copy-receive-code") {
     const code = document.querySelector("#receive-qr-image")?.dataset.code;
     if (!code) {
@@ -2370,6 +2557,13 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "refresh-kyc-button") {
+    loadKycRequests()
+      .then(() => showToast("实名申请已刷新"))
+      .catch((error) => showToast(error.message || "刷新失败"));
+    return;
+  }
+
   if (button.id === "refresh-merchants-button") {
     loadMerchants()
       .then(() => showToast("商家列表已刷新"))
@@ -2524,6 +2718,14 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.classList.contains("kyc-action")) {
+    const approved = button.dataset.action === "approve";
+    reviewKycRequest(button.dataset.requestId, approved)
+      .then(() => showToast(approved ? "实名审核已通过" : "实名审核已拒绝"))
+      .catch((error) => showToast(error.message || "审核失败"));
+    return;
+  }
+
   if (button.classList.contains("admin-user-action")) {
     const userId = button.dataset.userId;
     const action = button.dataset.action;
@@ -2535,6 +2737,8 @@ function handleAdminButton(button) {
           <p><strong>邮箱：</strong>${user?.email || "-"}</p>
           <p><strong>UID：</strong>${userId}</p>
           <p><strong>余额：</strong>${formatMoney(user?.balance || 0)}</p>
+          <p><strong>实名状态：</strong>${user?.kycStatus || "unsubmitted"}</p>
+          <p><strong>实名姓名：</strong>${user?.kycFullName || "-"}</p>
           <p><strong>状态：</strong>${user?.status === "frozen" ? "已冻结" : "正常"}</p>
           <p><strong>交易数：</strong>${(user?.transactions || []).length}</p>
         </div>`,
@@ -2611,6 +2815,13 @@ document.querySelectorAll(".module-card").forEach((card) => {
       loadRiskCenter()
         .then(() => showToast("风控中心已打开"))
         .catch((error) => showToast(error.message || "风控中心加载失败"));
+      return;
+    }
+    if (title === "实名认证/KYC 审核") {
+      document.querySelector("#admin-kyc-management")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadKycRequests()
+        .then(() => showToast("KYC 审核已打开"))
+        .catch((error) => showToast(error.message || "实名申请加载失败"));
       return;
     }
     openDialog(title, `<p class="dialog-note">${desc}</p>`, "打开模块", () => {
