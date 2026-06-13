@@ -1507,7 +1507,7 @@ function renderMerchantDashboard(data = {}) {
     "暂无待结算余额",
     (item) =>
       item.status === "available"
-        ? `<li><span>待结算余额</span><strong>${formatMoney(item.amount || 0)}</strong><button id="merchant-settlement-button" type="button">申请</button></li>`
+        ? `<li><span>Available settlement</span><strong>${formatMoney(item.amount || 0)}</strong><button id="merchant-settlement-button" type="button" ${Number(item.amount || 0) <= 0 ? "disabled" : ""}>${Number(item.amount || 0) <= 0 ? "No balance" : "Apply"}</button></li>`
         : `<li><span>${item.id || "结算单"} · ${item.status === "pending" ? "待后台审批" : item.status === "approved" ? "已结算" : "已拒绝"}</span><strong>${formatMoney(item.amount || 0)}</strong></li>`
   );
   renderList("#merchant-transactions-list", transactions, "暂无交易记录", (item) => `<li><span>${item.type || "交易"} ${item.target || ""}</span><strong>${item.amount || "-"}</strong></li>`);
@@ -4093,13 +4093,14 @@ function handleMerchantButton(button) {
 
   if (button.id === "merchant-settlement-button") {
     const amount = Number(currentMerchant?.settlementBalance || 0);
+    const hasPendingSettlement = (currentMerchant?.settlements || []).some((item) => (item.status || "pending") === "pending");
+    if (!amount) {
+      showToast(hasPendingSettlement ? "Settlement request already submitted, please wait for admin review" : "No settlement balance available");
+      return;
+    }
     const missingProfile = getMissingMerchantProfileFields(currentMerchant || {});
     if (missingProfile.length) {
       showToast(`Merchant profile incomplete: ${missingProfile.join(", ")}`);
-      return;
-    }
-    if (!amount) {
-      showToast("当前没有可结算金额");
       return;
     }
     openDialog(
