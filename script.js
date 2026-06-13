@@ -186,13 +186,24 @@ async function exportSystemBackupJson() {
     })
   );
   const configSnap = await getDoc(doc(db, "systemConfig", "main"));
-  const backup = {
+  const collections = Object.fromEntries(entries);
+  const backupSummary = {
     exportedAt: new Date().toISOString(),
+    exportedBy: currentUser?.email || "-",
+    collectionCount: collectionNames.length,
+    documentCount: entries.reduce((total, [, docs]) => total + docs.length, 0),
+  };
+  const backup = {
+    exportedAt: backupSummary.exportedAt,
+    exportedBy: backupSummary.exportedBy,
     projectId: firebaseConfig.projectId,
-    collections: Object.fromEntries(entries),
+    collections,
     systemConfig: configSnap.exists() ? { id: "main", ...configSnap.data() } : null,
   };
   downloadJson(`oneminpay-backup-${new Date().toISOString().slice(0, 10)}.json`, backup);
+  await setDoc(doc(db, "systemConfig", "main"), { lastBackup: backupSummary, updatedAt: serverTimestamp() }, { merge: true });
+  systemConfig = { ...systemConfig, lastBackup: backupSummary };
+  renderSystemConfig();
   showToast("Backup JSON exported");
 }
 
@@ -401,6 +412,11 @@ function renderSystemConfig() {
   setText("#config-fee-summary", systemConfig.merchantFeeRate || DEFAULT_SYSTEM_CONFIG.merchantFeeRate);
   setText("#config-limit-summary", formatMoney(systemConfig.dailyTransactionLimit || 0));
   setText("#config-maintenance-summary", systemConfig.maintenanceMode ? "开启" : "关闭");
+
+  setText("#backup-collection-count", String(systemConfig.lastBackup?.collectionCount || 0));
+  setText("#backup-document-count", String(systemConfig.lastBackup?.documentCount || 0));
+  setText("#backup-last-time", systemConfig.lastBackup?.exportedAt ? new Date(systemConfig.lastBackup.exportedAt).toLocaleString("en-MY") : "-");
+  setText("#backup-last-by", systemConfig.lastBackup?.exportedBy || "-");
 
   const fields = {
     "#config-points-rate": systemConfig.pointsPerMyr,
