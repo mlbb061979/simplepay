@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OneMinPay Merchant</title>
+    <title>OneMinPay User</title>
     <meta name="theme-color" content="#00a76f" />
-    <link rel="manifest" href="./manifest-merchant.json" />
+    <link rel="manifest" href="./manifest-user.json" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <meta http-equiv="refresh" content="1; url=./index.html?role=merchant" />
+    <meta http-equiv="refresh" content="1; url=./index.html?role=user" />
     <style>
       body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Arial, "Microsoft YaHei", sans-serif; background: #f4f7f6; color: #17201c; }
       main { width: min(420px, 88vw); padding: 28px; border: 1px solid #dce6e1; border-radius: 8px; background: #fff; box-shadow: 0 16px 40px rgba(20, 54, 42, .09); }
@@ -23,13 +23,13 @@
   <body>
     <main>
       <div class="mark">1</div>
-      <h1>OneMinPay Merchant</h1>
-      <p>Opening merchant QR, orders, refunds, settlement and notifications.</p>
+      <h1>OneMinPay User</h1>
+      <p>Opening wallet, QR payment, receive code and transaction records.</p>
       <div class="bar"></div>
-      <a href="./index.html?role=merchant">Open now</a>
+      <a href="./index.html?role=user">Open now</a>
     </main>
     <script>
-      window.setTimeout(() => window.location.replace("./index.html?role=merchant"), 600);
+      window.setTimeout(() => window.location.replace("./index.html?role=user"), 600);
     </script>
   </body>
 </html>

@@ -1,0 +1,17 @@
+{
+  "name": "OneMinPay Admin",
+  "short_name": "Admin",
+  "description": "OneMinPay admin console for approvals, reports, risk, support and settings.",
+  "start_url": "./index.html?role=admin",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f7f6",
+  "theme_color": "#00a76f",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
