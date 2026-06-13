@@ -1111,6 +1111,7 @@ async function createSupportTicket(data) {
     updatedAt: serverTimestamp(),
   });
   await loadSupportTickets();
+  if (activeRole === "admin") loadAdminOverview().catch(() => {});
 }
 
 async function updateSupportTicket(ticketId, patch, auditAction = "更新客服工单") {
@@ -1594,6 +1595,7 @@ async function updateMerchantStatus(merchantId, status) {
     { merge: true }
   );
   await loadMerchants();
+  loadAdminOverview().catch(() => {});
   logAuditSafe({
     module: "商家管理",
     action: "更新商家状态",
@@ -2327,7 +2329,7 @@ async function reviewKycRequest(requestId, approved) {
     { merge: true }
   );
 
-  await Promise.all([loadKycRequests(), loadAdminUsers(), loadRiskCenter()]);
+  await Promise.all([loadKycRequests(), loadAdminUsers(), loadRiskCenter(), loadAdminOverview()]);
   logAuditSafe({
     module: "实名认证/KYC 审核",
     action: approved ? "通过实名申请" : "拒绝实名申请",
@@ -2397,13 +2399,15 @@ function sumApproved(docs, field = "amount") {
 }
 
 async function loadAdminOverview() {
-  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot, kycSnapshot, supportSnapshot] = await Promise.all([
     getDocs(collection(db, "wallets")),
     getDocs(collection(db, "merchants")),
     getDocs(collection(db, "rechargeRequests")),
     getDocs(collection(db, "withdrawRequests")),
     getDocs(collection(db, "refundRequests")),
     getDocs(collection(db, "settlementRequests")),
+    getDocs(collection(db, "kycRequests")),
+    getDocs(collection(db, "supportTickets")),
   ]);
 
   const wallets = walletSnapshot.docs.map((item) => item.data());
@@ -2412,6 +2416,8 @@ async function loadAdminOverview() {
   const withdrawals = withdrawalSnapshot.docs.map((item) => item.data());
   const refunds = refundSnapshot.docs.map((item) => item.data());
   const settlements = settlementSnapshot.docs.map((item) => item.data());
+  const kycRequests = kycSnapshot.docs.map((item) => item.data());
+  const supportTickets = supportSnapshot.docs.map((item) => item.data());
   const merchantSales = merchants.reduce(
     (total, merchant) =>
       total +
@@ -2430,6 +2436,18 @@ async function loadAdminOverview() {
   setText("#admin-total-points", formatMoney(totalPoints));
   setText("#admin-active-users", String(wallets.filter((wallet) => (wallet.status || "active") !== "frozen").length));
   setText("#admin-merchant-count", String(merchants.length));
+  setText("#admin-pending-merchants", String(merchants.filter((merchant) => (merchant.status || "pending") === "pending").length));
+  setText("#admin-pending-kyc", String(kycRequests.filter((item) => (item.status || "pending") === "pending").length));
+  setText(
+    "#admin-pending-funds",
+    String(
+      recharges.filter((item) => (item.status || "pending") === "pending").length +
+        withdrawals.filter((item) => (item.status || "pending") === "pending").length +
+        refunds.filter((item) => (item.status || "pending") === "pending").length +
+        settlements.filter((item) => (item.status || "pending") === "pending").length
+    )
+  );
+  setText("#admin-open-tickets", String(supportTickets.filter((item) => (item.status || "open") !== "closed").length));
 }
 
 function parseFeeRate(rate = "0.60%") {
