@@ -108,6 +108,15 @@ h2 { font-size: 17px; }
 .balance-actions { display: grid; align-content: start; gap: 10px; }
 .ghost-action { border: 1px solid var(--line); background: #fff; color: var(--text); }
 .text-action, .list-panel button { background: var(--surface-soft); color: var(--primary-dark); font-weight: 700; }
+.dashboard-shortcut {
+  cursor: pointer;
+  transition: transform .16s ease, border-color .16s ease, background .16s ease;
+}
+.dashboard-shortcut:hover {
+  transform: translateY(-1px);
+  border-color: var(--primary);
+  background: #f6fffb;
+}
 .google-action {
   display: inline-flex; align-items: center; justify-content: center; gap: 10px;
   min-width: 190px; border: 1px solid var(--line); background: #fff; color: var(--text);

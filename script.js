@@ -3933,6 +3933,43 @@ function handleMerchantButton(button) {
   }
 }
 
+function openAdminShortcut(target) {
+  const actions = {
+    merchants: {
+      permission: "merchants",
+      selector: "#admin-merchant-management",
+      load: () => loadMerchants(),
+      message: "Pending merchants opened",
+    },
+    kyc: {
+      permission: "kyc",
+      selector: "#admin-kyc-management",
+      load: () => loadKycRequests(),
+      message: "Pending KYC opened",
+    },
+    funds: {
+      permission: "funds",
+      selector: "#admin-recharge-management",
+      load: () => Promise.all([loadRechargeRequests(), loadWithdrawalRequests(), loadRefundRequests(), loadSettlementRequests()]),
+      message: "Pending funds opened",
+    },
+    support: {
+      permission: "support",
+      selector: "#admin-support-management",
+      load: () => loadSupportTickets(),
+      message: "Open tickets loaded",
+    },
+  };
+  const action = actions[target];
+  if (!action) return;
+  if (!requireAdminPermission(action.permission)) return;
+  document.querySelector(action.selector)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  action
+    .load()
+    .then(() => showToast(action.message))
+    .catch((error) => showToast(error.message || "Shortcut load failed"));
+}
+
 function handleAdminButton(button) {
   const text = button.textContent.trim();
   if (button.id === "export-finance-button") {
@@ -4583,6 +4620,12 @@ authButtons.forEach((button) => {
 logoutButton.addEventListener("click", logout);
 
 document.addEventListener("click", (event) => {
+  const shortcut = event.target.closest(".dashboard-shortcut");
+  if (shortcut && shortcut.closest("#admin-view")) {
+    if (activeRole === "admin") openAdminShortcut(shortcut.dataset.target);
+    return;
+  }
+
   const button = event.target.closest("button");
   if (!button || button.classList.contains("auth-action") || button.id === "logout-button") return;
   const activeView = document.querySelector(".view.active");
