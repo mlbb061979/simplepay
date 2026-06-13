@@ -9,13 +9,18 @@ import {
 import {
   collection,
   doc,
+  documentId,
   getDoc,
   getDocs,
   getFirestore,
+  limit as firestoreLimit,
   onSnapshot,
+  orderBy,
+  query,
   runTransaction,
   serverTimestamp,
   setDoc,
+  startAfter,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -126,6 +131,11 @@ let systemConfig = { ...DEFAULT_SYSTEM_CONFIG };
 let userTransactionFilter = "all";
 let adminTransactionFilter = "all";
 let auditLogFilter = { module: "all", result: "all" };
+const ADMIN_PAGE_SIZE = 20;
+const adminPagerState = {
+  users: { lastId: "", hasMore: true, loading: false },
+  merchants: { lastId: "", hasMore: true, loading: false },
+};
 
 function formatMoney(amount) {
   return `${Math.round(Number(amount || 0)).toLocaleString("en-MY")} 积分`;
@@ -725,6 +735,27 @@ function renderAdminUsers(users = []) {
     .join("");
 }
 
+function renderPagerControl(type, panelSelector, loadedCount = 0) {
+  const panel = document.querySelector(panelSelector);
+  if (!panel) return;
+  const state = adminPagerState[type];
+  if (!state) return;
+  let pager = panel.querySelector(`.pager-control[data-pager="${type}"]`);
+  if (!pager) {
+    pager = document.createElement("div");
+    pager.className = "pager-control";
+    pager.dataset.pager = type;
+    panel.appendChild(pager);
+  }
+  pager.innerHTML = `
+    <span>Loaded ${loadedCount}</span>
+    <button class="ghost-action pager-action" data-pager="${type}" data-action="more" type="button" ${!state.hasMore || state.loading ? "disabled" : ""}>
+      ${state.loading ? "Loading..." : state.hasMore ? "Load more" : "No more"}
+    </button>
+    <button class="text-action pager-action" data-pager="${type}" data-action="reset" type="button">Refresh first page</button>
+  `;
+}
+
 function roleLabel(role) {
   const labels = {
     owner: "主后台",
@@ -1308,13 +1339,36 @@ function openPermissionEditor(admin) {
   );
 }
 
-async function loadAdminUsers() {
+async function loadAdminUsers(options = {}) {
+  const { reset = true } = options;
   const body = document.querySelector("#admin-users-body");
+  const state = adminPagerState.users;
+  if (state.loading) return;
+  state.loading = true;
+  if (reset) {
+    state.lastId = "";
+    state.hasMore = true;
+    adminUsersCache = [];
+  }
+  renderPagerControl("users", "#admin-user-management", adminUsersCache.length);
   if (body) body.innerHTML = '<tr><td colspan="5">正在加载用户数据...</td></tr>';
 
-  const snapshot = await getDocs(collection(db, "wallets"));
-  adminUsersCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-  renderAdminUsers(adminUsersCache);
+  try {
+    const queryParts = [collection(db, "wallets"), orderBy(documentId()), firestoreLimit(ADMIN_PAGE_SIZE)];
+    if (state.lastId) queryParts.splice(2, 0, startAfter(state.lastId));
+    const snapshot = await getDocs(query(...queryParts));
+    const rows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    adminUsersCache = reset ? rows : [...adminUsersCache, ...rows];
+    state.lastId = snapshot.docs.at(-1)?.id || state.lastId;
+    state.hasMore = snapshot.docs.length === ADMIN_PAGE_SIZE;
+    state.loading = false;
+    renderAdminUsers(adminUsersCache);
+    renderPagerControl("users", "#admin-user-management", adminUsersCache.length);
+  } catch (error) {
+    state.loading = false;
+    renderPagerControl("users", "#admin-user-management", adminUsersCache.length);
+    throw error;
+  }
 }
 
 function renderMerchants(merchants = []) {
@@ -1526,15 +1580,34 @@ async function payMerchant(merchantId, merchantName, amount, coupon = null) {
   });
 }
 
-async function loadMerchants() {
+async function loadMerchants(options = {}) {
+  const { reset = true } = options;
   const body = document.querySelector("#admin-merchants-body");
+  const state = adminPagerState.merchants;
+  if (state.loading) return;
+  state.loading = true;
+  if (reset) {
+    state.lastId = "";
+    state.hasMore = true;
+    merchantsCache = [];
+  }
+  renderPagerControl("merchants", "#admin-merchant-management", merchantsCache.length);
   if (body) body.innerHTML = '<tr><td colspan="5">正在加载商家数据...</td></tr>';
 
   try {
-    const snapshot = await getDocs(collection(db, "merchants"));
-    merchantsCache = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    const queryParts = [collection(db, "merchants"), orderBy(documentId()), firestoreLimit(ADMIN_PAGE_SIZE)];
+    if (state.lastId) queryParts.splice(2, 0, startAfter(state.lastId));
+    const snapshot = await getDocs(query(...queryParts));
+    const rows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    merchantsCache = reset ? rows : [...merchantsCache, ...rows];
+    state.lastId = snapshot.docs.at(-1)?.id || state.lastId;
+    state.hasMore = snapshot.docs.length === ADMIN_PAGE_SIZE;
+    state.loading = false;
     renderMerchants(merchantsCache);
+    renderPagerControl("merchants", "#admin-merchant-management", merchantsCache.length);
   } catch (error) {
+    state.loading = false;
+    renderPagerControl("merchants", "#admin-merchant-management", merchantsCache.length);
     if (body) {
       body.innerHTML = `<tr><td colspan="5">商家数据加载失败：${error.code || error.message}</td></tr>`;
     }
@@ -3996,6 +4069,25 @@ function handleAdminButton(button) {
       )
       .catch((error) => showToast(error.message || "Backup failed"));
     return;
+  }
+
+  if (button.classList.contains("pager-action")) {
+    const pager = button.dataset.pager;
+    const action = button.dataset.action;
+    if (pager === "users") {
+      if (!requireAdminPermission("users")) return;
+      loadAdminUsers({ reset: action !== "more" })
+        .then(() => showToast(action === "more" ? "Loaded more users" : "User list refreshed"))
+        .catch((error) => showToast(error.message || "User pagination failed"));
+      return;
+    }
+    if (pager === "merchants") {
+      if (!requireAdminPermission("merchants")) return;
+      loadMerchants({ reset: action !== "more" })
+        .then(() => showToast(action === "more" ? "Loaded more merchants" : "Merchant list refreshed"))
+        .catch((error) => showToast(error.message || "Merchant pagination failed"));
+      return;
+    }
   }
 
   if (button.id === "refresh-users-button") {

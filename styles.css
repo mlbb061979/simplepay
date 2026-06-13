@@ -48,6 +48,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   box-shadow: 0 8px 18px rgba(20, 54, 42, 0.06);
 }
 .entry-link:hover { border-color: var(--primary); background: #f6fffb; }
+.pager-control {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px;
+  padding-top: 14px; color: var(--muted); font-size: 13px;
+}
+.pager-control .ghost-action, .pager-control .text-action { min-height: 34px; padding: 7px 12px; }
 .login-choice {
   min-height: 300px; padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow);
