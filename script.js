@@ -1578,6 +1578,37 @@ async function payMerchant(merchantId, merchantName, amount, coupon = null) {
       { merge: true }
     );
   });
+
+  recordLedgerTransactionSafe({
+    id: `payment-user-${orderId}`,
+    account: currentUser?.email || currentUser?.uid,
+    accountId: currentUser?.uid,
+    accountRole: "user",
+    counterparty: merchantName || merchantId,
+    type: "商家付款",
+    amount: payableAmount,
+    amountText: `- ${formatMoney(payableAmount)}${couponText}`,
+    source: "扫码付款",
+    sourceType: "payment",
+    status: "成功",
+    statusClass: "success",
+    detail: `Order: ${orderId} / Merchant: ${merchantId}`,
+  });
+  recordLedgerTransactionSafe({
+    id: `payment-merchant-${orderId}`,
+    account: merchantName || merchantId,
+    accountId: merchantId,
+    accountRole: "merchant",
+    counterparty: currentUser?.email || currentUser?.uid,
+    type: "QR收款",
+    amount: payableAmount,
+    amountText: `+ ${formatMoney(payableAmount)}`,
+    source: "商家收款",
+    sourceType: "payment",
+    status: "成功",
+    statusClass: "success",
+    detail: `Order: ${orderId} / Customer: ${currentUser?.email || "-"}`,
+  });
 }
 
 async function loadMerchants(options = {}) {
@@ -1800,6 +1831,21 @@ async function reviewRechargeRequest(requestId, approved, reviewInfo = {}) {
     );
   });
 
+  recordLedgerTransactionSafe({
+    id: `recharge-${requestId}`,
+    account: request.email || request.userId,
+    accountId: request.userId,
+    accountRole: "user",
+    counterparty: currentUser?.email || "admin",
+    type: approved ? "充值审批通过" : "充值审批拒绝",
+    amount: Number(request.amount || 0),
+    amountText: approved ? `+ ${formatMoney(request.amount || 0)}` : formatMoney(request.amount || 0),
+    source: "充值审批",
+    sourceType: "recharge",
+    status: approved ? "已通过" : "已拒绝",
+    statusClass: approved ? "success" : "danger",
+    detail: `${request.email || request.userId} / ${reviewInfo.paymentReference || reviewInfo.reviewNote || "-"}`,
+  });
   await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
@@ -1941,6 +1987,21 @@ async function reviewWithdrawalRequest(requestId, approved, reviewInfo = {}) {
     );
   });
 
+  recordLedgerTransactionSafe({
+    id: `withdrawal-${requestId}`,
+    account: request.email || request.userId,
+    accountId: request.userId,
+    accountRole: "user",
+    counterparty: request.bankAccount || "",
+    type: approved ? "提现审批通过" : "提现审批拒绝",
+    amount: Number(request.amount || 0),
+    amountText: approved ? `- ${formatMoney(request.amount || 0)}` : formatMoney(request.amount || 0),
+    source: "提现审批",
+    sourceType: "withdrawal",
+    status: approved ? "已通过" : "已拒绝",
+    statusClass: approved ? "success" : "danger",
+    detail: `${request.bankAccount || "-"} / ${reviewInfo.payoutReference || reviewInfo.reviewNote || "-"}`,
+  });
   await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
@@ -2123,6 +2184,21 @@ async function reviewRefundRequest(requestId, approved) {
     }
   });
 
+  recordLedgerTransactionSafe({
+    id: `refund-${requestId}`,
+    account: request.customerEmail || request.customerId,
+    accountId: request.customerId,
+    accountRole: "user",
+    counterparty: request.merchantName || request.merchantEmail || request.merchantId,
+    type: approved ? "退款审批通过" : "退款审批拒绝",
+    amount: Number(request.amount || 0),
+    amountText: approved ? `+ ${formatMoney(request.amount || 0)}` : formatMoney(request.amount || 0),
+    source: "退款审批",
+    sourceType: "refund",
+    status: approved ? "已通过" : "已拒绝",
+    statusClass: approved ? "success" : "danger",
+    detail: `Order: ${request.orderId || "-"} / Merchant: ${request.merchantId || "-"}`,
+  });
   await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
@@ -2291,6 +2367,21 @@ async function reviewSettlementRequest(requestId, approved, reviewInfo = {}) {
     );
   });
 
+  recordLedgerTransactionSafe({
+    id: `settlement-${requestId}`,
+    account: request.merchantName || request.merchantEmail || request.merchantId,
+    accountId: request.merchantId,
+    accountRole: "merchant",
+    counterparty: request.settlementAccount || "",
+    type: approved ? "结算审批通过" : "结算审批拒绝",
+    amount: Number(request.amount || 0),
+    amountText: approved ? `${formatMoney(request.amount || 0)} / ${formatRM(pointsToMyr(request.amount || 0))}` : `+ ${formatMoney(request.amount || 0)}`,
+    source: "结算审批",
+    sourceType: "settlement",
+    status: approved ? "已通过" : "已拒绝",
+    statusClass: approved ? "success" : "danger",
+    detail: `${request.settlementBank || "-"} / ${request.settlementAccount || "-"} / ${reviewInfo.payoutReference || reviewInfo.reviewNote || "-"}`,
+  });
   await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
   loadAdminTransactions().catch(() => {});
   logAuditSafe({
@@ -2450,13 +2541,42 @@ function normalizeTransactionRow(row) {
     id: row.id || `T${Date.now()}`,
     account: row.account || "-",
     type: row.type || "-",
-    amount: row.amount || "-",
+    amount: row.amountText || row.amount || "-",
     source: row.source || "-",
     status: row.status || "成功",
     statusClass: row.statusClass || "success",
     createdAt: row.createdAt || "",
     detail: row.detail || "",
   };
+}
+
+async function recordLedgerTransaction(entry = {}) {
+  const id = entry.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await setDoc(
+    doc(db, "transactions", id),
+    {
+      id,
+      account: entry.account || "",
+      accountId: entry.accountId || "",
+      accountRole: entry.accountRole || "",
+      counterparty: entry.counterparty || "",
+      type: entry.type || "",
+      amount: Math.round(Number(entry.amount || 0)),
+      amountText: entry.amountText || formatMoney(entry.amount || 0),
+      source: entry.source || "",
+      sourceType: entry.sourceType || "ledger",
+      status: entry.status || "成功",
+      statusClass: entry.statusClass || "success",
+      detail: entry.detail || "",
+      createdAt: entry.createdAt || new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+function recordLedgerTransactionSafe(entry = {}) {
+  recordLedgerTransaction(entry).catch((error) => console.warn("Ledger transaction write skipped", error));
 }
 
 function reviewDetail(data = {}, referenceKey = "payoutReference") {
@@ -2889,7 +3009,8 @@ async function loadAdminTransactions() {
   const body = document.querySelector("#admin-transactions-body");
   if (body) body.innerHTML = '<tr><td colspan="7">正在加载交易流水...</td></tr>';
 
-  const [walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+  const [ledgerSnapshot, walletSnapshot, merchantSnapshot, rechargeSnapshot, withdrawalSnapshot, refundSnapshot, settlementSnapshot] = await Promise.all([
+    getDocs(query(collection(db, "transactions"), orderBy("createdAt", "desc"), firestoreLimit(120))).catch(() => ({ docs: [] })),
     getDocs(collection(db, "wallets")),
     getDocs(collection(db, "merchants")),
     getDocs(collection(db, "rechargeRequests")),
@@ -2897,6 +3018,8 @@ async function loadAdminTransactions() {
     getDocs(collection(db, "refundRequests")),
     getDocs(collection(db, "settlementRequests")),
   ]);
+
+  const ledgerRows = ledgerSnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
 
   const walletRows = walletSnapshot.docs.flatMap((docSnap) => {
     const data = docSnap.data();
@@ -3023,9 +3146,8 @@ async function loadAdminTransactions() {
     };
   });
 
-  adminTransactionsCache = [...walletRows, ...merchantRows, ...rechargeRows, ...withdrawalRows, ...refundRows, ...settlementRows].sort((a, b) =>
-    String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
-  );
+  const mergedRows = [...ledgerRows, ...walletRows, ...merchantRows, ...rechargeRows, ...withdrawalRows, ...refundRows, ...settlementRows];
+  adminTransactionsCache = [...new Map(mergedRows.map((row) => [row.id, row])).values()].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
   renderAdminTransactions();
 }
 
@@ -3137,6 +3259,37 @@ async function transferToUser(recipientUserId, recipientName, amount) {
       },
       { merge: true }
     );
+  });
+
+  recordLedgerTransactionSafe({
+    id: `transfer-payer-${payerTx.id}`,
+    account: currentUser?.email || currentUser?.uid,
+    accountId: currentUser?.uid,
+    accountRole: "user",
+    counterparty: recipientName || recipientUserId,
+    type: "扫码转账",
+    amount,
+    amountText: `- ${formatMoney(amount)}`,
+    source: "个人收款码",
+    sourceType: "transfer",
+    status: "成功",
+    statusClass: "success",
+    detail: `Recipient UID: ${recipientUserId}`,
+  });
+  recordLedgerTransactionSafe({
+    id: `transfer-recipient-${recipientTx.id}`,
+    account: recipientName || recipientUserId,
+    accountId: recipientUserId,
+    accountRole: "user",
+    counterparty: currentUser?.email || currentUser?.uid,
+    type: "收款",
+    amount,
+    amountText: `+ ${formatMoney(amount)}`,
+    source: "个人收款码",
+    sourceType: "transfer",
+    status: "成功",
+    statusClass: "success",
+    detail: `Payer UID: ${currentUser?.uid || "-"}`,
   });
 }
 
