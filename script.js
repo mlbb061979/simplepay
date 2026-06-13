@@ -1809,7 +1809,7 @@ async function reviewRechargeRequest(requestId, approved, reviewInfo = {}) {
     if (!requestSnap.exists()) throw new Error("充值申请不存在");
     if (!userSnap.exists()) throw new Error("用户钱包不存在");
 
-    const latestRequest = requestSnap.data();
+    const latestRequest = requestSnap.exists() ? requestSnap.data() : request;
     if (latestRequest.status !== "pending") throw new Error("该申请已处理");
 
     const userData = userSnap.data() || {};
@@ -1963,7 +1963,7 @@ async function reviewWithdrawalRequest(requestId, approved, reviewInfo = {}) {
     if (!requestSnap.exists()) throw new Error("提现申请不存在");
     if (!userSnap.exists()) throw new Error("用户钱包不存在");
 
-    const latestRequest = requestSnap.data();
+    const latestRequest = requestSnap.exists() ? requestSnap.data() : request;
     if (latestRequest.status !== "pending") throw new Error("该申请已处理");
     const userData = userSnap.data() || {};
     const balance = Number(userData.balance || 0);
@@ -2157,6 +2157,15 @@ async function reviewRefundRequest(requestId, approved) {
     transaction.set(
       requestRef,
       {
+        ...latestRequest,
+        id: requestId,
+        merchantId: latestRequest.merchantId || request.merchantId,
+        merchantName: latestRequest.merchantName || request.merchantName || "",
+        merchantEmail: latestRequest.merchantEmail || request.merchantEmail || "",
+        settlementBank: latestRequest.settlementBank || request.settlementBank || "",
+        settlementAccount: latestRequest.settlementAccount || request.settlementAccount || "",
+        amount,
+        myrAmount: latestRequest.myrAmount || pointsToMyr(amount),
         status: nextStatus,
         reviewedBy: currentUser.email,
         reviewedAt: serverTimestamp(),
@@ -2253,15 +2262,30 @@ function renderSettlementRequests(requests = []) {
 
 async function loadSettlementRequests() {
   const body = document.querySelector("#admin-settlements-body");
-  if (body) body.innerHTML = '<tr><td colspan="6">正在加载结算申请...</td></tr>';
+  if (body) body.innerHTML = '<tr><td colspan="6">Loading settlement requests...</td></tr>';
 
-  const snapshot = await getDocs(collection(db, "settlementRequests"));
-  settlementRequestsCache = snapshot.docs
-    .map((item) => ({ id: item.id, ...item.data() }))
+  const [requestSnapshot, merchantSnapshot] = await Promise.all([
+    getDocs(collection(db, "settlementRequests")).catch(() => ({ docs: [] })),
+    getDocs(collection(db, "merchants")),
+  ]);
+  const directRequests = requestSnapshot.docs.map((item) => ({ id: item.id, ...item.data(), source: "settlementRequests" }));
+  const embeddedRequests = merchantSnapshot.docs.flatMap((merchantDoc) => {
+    const merchant = merchantDoc.data() || {};
+    return (merchant.settlements || []).map((item) => ({
+      ...item,
+      id: item.id,
+      merchantId: item.merchantId || merchantDoc.id,
+      merchantName: item.merchantName || merchant.businessName || merchant.displayName || merchant.email,
+      merchantEmail: item.merchantEmail || merchant.email,
+      settlementBank: item.settlementBank || merchant.settlementBank || "",
+      settlementAccount: item.settlementAccount || merchant.settlementAccount || "",
+      source: "merchant",
+    }));
+  });
+  settlementRequestsCache = [...new Map([...embeddedRequests, ...directRequests].filter((item) => item.id).map((item) => [item.id, item])).values()]
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
   renderSettlementRequests(settlementRequestsCache);
 }
-
 async function submitSettlementRequest(amount) {
   if (!currentMerchant?.id) throw new Error("请先登录商家账号");
   if (merchantStatus !== "approved") throw new Error("商家未通过审核，无法申请结算");
@@ -2322,10 +2346,9 @@ async function reviewSettlementRequest(requestId, approved, reviewInfo = {}) {
     const merchantDocRef = doc(db, "merchants", request.merchantId);
     const requestSnap = await transaction.get(requestRef);
     const merchantSnap = await transaction.get(merchantDocRef);
-    if (!requestSnap.exists()) throw new Error("结算申请不存在");
     if (!merchantSnap.exists()) throw new Error("商家资料不存在");
 
-    const latestRequest = requestSnap.data();
+    const latestRequest = requestSnap.exists() ? requestSnap.data() : request;
     if (latestRequest.status !== "pending") throw new Error("该结算申请已处理");
 
     const amount = Number(latestRequest.amount || 0);
@@ -2341,6 +2364,15 @@ async function reviewSettlementRequest(requestId, approved, reviewInfo = {}) {
     transaction.set(
       requestRef,
       {
+        ...latestRequest,
+        id: requestId,
+        merchantId: latestRequest.merchantId || request.merchantId,
+        merchantName: latestRequest.merchantName || request.merchantName || "",
+        merchantEmail: latestRequest.merchantEmail || request.merchantEmail || "",
+        settlementBank: latestRequest.settlementBank || request.settlementBank || "",
+        settlementAccount: latestRequest.settlementAccount || request.settlementAccount || "",
+        amount,
+        myrAmount: latestRequest.myrAmount || pointsToMyr(amount),
         status: nextStatus,
         payoutReference: approved ? reviewInfo.payoutReference || "" : "",
         reviewNote: reviewInfo.reviewNote || "",
