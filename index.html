@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>1分钟支付</title>
     <link rel="stylesheet" href="styles.css" />
+    <style>
+      .entry-links { display: flex; flex-wrap: wrap; gap: 12px; max-width: 1180px; width: 100%; margin: -6px auto 0; }
+      .entry-link { min-height: 42px; padding: 9px 16px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #dce6e1; border-radius: 8px; background: #fff; color: #007f58; font-weight: 800; text-decoration: none; box-shadow: 0 8px 18px rgba(20, 54, 42, .06); }
+      .entry-link:hover { border-color: #00a76f; background: #f6fffb; }
+    </style>
   </head>
   <body>
     <section class="login-gateway" id="login-gateway">
@@ -20,9 +25,9 @@
       </div>
 
       <nav class="entry-links" aria-label="Independent role entry links">
-        <a class="entry-link" href="./user.html">User Entry</a>
-        <a class="entry-link" href="./merchant.html">Merchant Entry</a>
-        <a class="entry-link" href="./admin.html">Admin Entry</a>
+        <a class="entry-link" href="./index.html?role=user">用户独立入口</a>
+        <a class="entry-link" href="./index.html?role=merchant">商家独立入口</a>
+        <a class="entry-link" href="./index.html?role=admin">后台独立入口</a>
       </nav>
 
       <div class="login-options">

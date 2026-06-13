@@ -3181,7 +3181,7 @@ async function loginAs(target) {
       }
     }
     await loadSystemConfig().catch(() => {});
-    enterRole(target);
+    await enterRole(target);
     if (target === "user") {
       await attachWallet(currentUser);
       loadMarketingItems().catch(() => {});
@@ -3202,7 +3202,7 @@ async function loginAs(target) {
   }
 }
 
-function enterRole(target) {
+async function enterRole(target) {
   const role = roleConfig[target];
   showOnlyView(target);
   pageTitle.textContent = role.title;
@@ -4784,7 +4784,7 @@ onAuthStateChanged(auth, async (user) => {
     }
   }
   await loadSystemConfig().catch(() => {});
-  enterRole(activeRole);
+  await enterRole(activeRole);
   if (activeRole === "user") await attachWallet(user);
   if (activeRole === "merchant") await attachMerchant(user);
 });
