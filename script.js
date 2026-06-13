@@ -153,6 +153,49 @@ function downloadCsv(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportSystemBackupJson() {
+  const collectionNames = [
+    "wallets",
+    "merchants",
+    "rechargeRequests",
+    "withdrawRequests",
+    "refundRequests",
+    "settlementRequests",
+    "kycRequests",
+    "marketingItems",
+    "supportTickets",
+    "adminUsers",
+    "auditLogs",
+  ];
+  const entries = await Promise.all(
+    collectionNames.map(async (name) => {
+      const snapshot = await getDocs(collection(db, name));
+      return [name, snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))];
+    })
+  );
+  const configSnap = await getDoc(doc(db, "systemConfig", "main"));
+  const backup = {
+    exportedAt: new Date().toISOString(),
+    projectId: firebaseConfig.projectId,
+    collections: Object.fromEntries(entries),
+    systemConfig: configSnap.exists() ? { id: "main", ...configSnap.data() } : null,
+  };
+  downloadJson(`oneminpay-backup-${new Date().toISOString().slice(0, 10)}.json`, backup);
+  showToast("Backup JSON exported");
+}
+
 function exportMerchantOrdersCsv() {
   const orders = Array.isArray(currentMerchant?.orders) ? currentMerchant.orders : [];
   if (!orders.length) {
@@ -3904,6 +3947,21 @@ function handleAdminButton(button) {
   if (button.id === "export-audit-button") {
     if (!requireAdminPermission("logs")) return;
     exportAuditLogsCsv();
+    return;
+  }
+
+  if (button.id === "backup-data-button") {
+    if (!requireAdminPermission("config")) return;
+    exportSystemBackupJson()
+      .then(() =>
+        logAuditSafe({
+          module: "System config",
+          action: "Export backup JSON",
+          target: "all collections",
+          detail: "Manual admin backup",
+        })
+      )
+      .catch((error) => showToast(error.message || "Backup failed"));
     return;
   }
 
