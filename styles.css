@@ -37,6 +37,17 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px;
   max-width: 1180px; width: 100%; margin: 0 auto;
 }
+.entry-links {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  max-width: 1180px; width: 100%; margin: -6px auto 0;
+}
+.entry-link {
+  min-height: 42px; padding: 9px 16px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  color: var(--primary-dark); font-weight: 800; text-decoration: none;
+  box-shadow: 0 8px 18px rgba(20, 54, 42, 0.06);
+}
+.entry-link:hover { border-color: var(--primary); background: #f6fffb; }
 .login-choice {
   min-height: 300px; padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow);
