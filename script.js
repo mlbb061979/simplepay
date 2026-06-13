@@ -87,8 +87,10 @@ const ADMIN_ROLE_PRESETS = {
   support: ["users", "transactions", "refunds", "kyc", "support"],
 };
 const MODULE_PERMISSION_BY_TITLE = Object.fromEntries(Object.entries(ADMIN_MODULES).map(([key, title]) => [title, key]));
+const VALID_ROLES = ["user", "merchant", "admin"];
+const initialRoleFromUrl = new URLSearchParams(window.location.search).get("role");
 
-let activeRole = sessionStorage.getItem("activeRole") || "";
+let activeRole = VALID_ROLES.includes(initialRoleFromUrl) ? initialRoleFromUrl : sessionStorage.getItem("activeRole") || "";
 let currentUser = null;
 let currentAdminProfile = null;
 let walletUnsubscribe = null;
@@ -3071,7 +3073,23 @@ function showOnlyView(target) {
   });
 }
 
+function applyRoleEntryMode(role = activeRole) {
+  if (!VALID_ROLES.includes(role)) return;
+  sessionStorage.setItem("activeRole", role);
+  authButtons.forEach((button) => {
+    const card = button.closest(".login-choice");
+    if (card) card.classList.toggle("hidden", button.dataset.target !== role);
+  });
+  const selectedRole = roleConfig[role];
+  if (selectedRole) {
+    pageTitle.textContent = selectedRole.title;
+    roleName.textContent = selectedRole.title;
+    currentRole.textContent = selectedRole.label;
+  }
+}
+
 async function loginAs(target) {
+  if (!VALID_ROLES.includes(target)) return;
   activeRole = target;
   sessionStorage.setItem("activeRole", target);
 
@@ -3165,6 +3183,12 @@ async function logout() {
   loginGateway.classList.remove("hidden");
   currentRole.textContent = "未登录";
   roleName.textContent = "-";
+  if (VALID_ROLES.includes(initialRoleFromUrl)) {
+    activeRole = initialRoleFromUrl;
+    applyRoleEntryMode(initialRoleFromUrl);
+  } else {
+    authButtons.forEach((button) => button.closest(".login-choice")?.classList.remove("hidden"));
+  }
   setWalletBalance(0);
   merchantStatus = "pending";
   emptyTransactionRow("登录后显示当前账户交易记录");
@@ -3869,68 +3893,6 @@ function handleMerchantButton(button) {
     return;
   }
 
-  if (text.includes("导出")) {
-    openDialog(
-      "导出订单",
-      `<p class="dialog-note">将导出今日订单、退款和结算状态。</p>
-       <div class="summary-box">文件名：merchant-orders-${new Date().toISOString().slice(0, 10)}.xlsx</div>`,
-      "模拟导出",
-      () => {
-        closeDialog();
-        showToast("订单报表已生成");
-      }
-    );
-    return;
-  }
-
-  if (text.includes("查看")) {
-    openDialog(
-      "订单详情",
-      `<div class="detail-list">
-        <p><strong>订单号：</strong>M20260603001</p>
-        <p><strong>顾客：</strong>Chen</p>
-        <p><strong>积分：</strong>6,820 积分</p>
-        <p><strong>状态：</strong>已支付</p>
-      </div>`,
-      "知道了",
-      closeDialog
-    );
-    return;
-  }
-
-  if (text.includes("处理")) {
-    openDialog(
-      "处理退款订单",
-      `<p class="dialog-note">订单 M20260603002 申请退款 3,100 积分。</p>`,
-      "通过退款",
-      () => {
-        button.textContent = "已处理";
-        button.disabled = true;
-        closeDialog();
-        showToast("退款处理完成");
-      }
-    );
-    return;
-  }
-
-  if (text.includes("通过") || text.includes("审核")) {
-    button.textContent = "已完成";
-    button.disabled = true;
-    showToast("退款审核已完成");
-    return;
-  }
-
-  if (text.includes("申请") || text.includes("凭证")) {
-    openDialog(
-      "结算管理",
-      `<p class="dialog-note">今日待结算 1,290,000 积分，系统会按比例换算成 RM 12,900 提交到绑定银行卡。</p>`,
-      "确认结算",
-      () => {
-        closeDialog();
-        showToast("结算申请已提交");
-      }
-    );
-  }
 }
 
 function openAdminShortcut(target) {
@@ -4616,6 +4578,10 @@ function handleAdminButton(button) {
 authButtons.forEach((button) => {
   button.addEventListener("click", () => loginAs(button.dataset.target));
 });
+
+if (VALID_ROLES.includes(activeRole)) {
+  applyRoleEntryMode(activeRole);
+}
 
 logoutButton.addEventListener("click", logout);
 
