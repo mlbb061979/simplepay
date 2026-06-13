@@ -130,6 +130,7 @@ let supportTicketsCache = [];
 let systemConfig = { ...DEFAULT_SYSTEM_CONFIG };
 let userTransactionFilter = "all";
 let adminTransactionFilter = "all";
+let adminTransactionSearch = "";
 let auditLogFilter = { module: "all", result: "all" };
 const ADMIN_PAGE_SIZE = 20;
 const adminPagerState = {
@@ -269,9 +270,7 @@ function exportFinanceReportCsv() {
 }
 
 function exportAdminTransactionsCsv() {
-  const rows = adminTransactionsCache
-    .filter((item) => adminTransactionFilter === "all" || item.sourceType === adminTransactionFilter)
-    .map((item) => normalizeTransactionRow(item));
+  const rows = getFilteredAdminTransactions().map((item) => normalizeTransactionRow(item));
   if (!rows.length) {
     showToast("No transactions to export");
     return;
@@ -284,6 +283,18 @@ function exportAdminTransactionsCsv() {
     ]
   );
   showToast("Transaction CSV exported");
+}
+
+function getFilteredAdminTransactions(filter = adminTransactionFilter, keyword = adminTransactionSearch) {
+  const term = String(keyword || "").trim().toLowerCase();
+  return adminTransactionsCache.filter((item) => {
+    if (filter !== "all" && item.sourceType !== filter) return false;
+    if (!term) return true;
+    const row = normalizeTransactionRow(item);
+    return [row.id, row.account, row.type, row.amount, row.source, row.status, row.createdAt, row.detail, item.accountId, item.counterparty]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(term));
+  });
 }
 
 function myrToPoints(amount) {
@@ -2978,7 +2989,7 @@ async function loadRiskCenter() {
 function renderAdminTransactions(filter = adminTransactionFilter) {
   const body = document.querySelector("#admin-transactions-body");
   if (!body) return;
-  const rows = adminTransactionsCache.filter((item) => filter === "all" || item.sourceType === filter);
+  const rows = getFilteredAdminTransactions(filter);
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="7">暂无交易流水</td></tr>';
     return;
@@ -4378,6 +4389,24 @@ function handleAdminButton(button) {
     return;
   }
 
+  if (button.id === "search-transactions-button") {
+    if (!requireAdminPermission("transactions")) return;
+    adminTransactionSearch = document.querySelector("#admin-transaction-search")?.value || "";
+    renderAdminTransactions(adminTransactionFilter);
+    showToast("Transaction search applied");
+    return;
+  }
+
+  if (button.id === "clear-transaction-search-button") {
+    if (!requireAdminPermission("transactions")) return;
+    adminTransactionSearch = "";
+    const input = document.querySelector("#admin-transaction-search");
+    if (input) input.value = "";
+    renderAdminTransactions(adminTransactionFilter);
+    showToast("Transaction search cleared");
+    return;
+  }
+
   if (button.classList.contains("transaction-filter")) {
     if (!requireAdminPermission("transactions")) return;
     adminTransactionFilter = button.dataset.filter || "all";
@@ -4847,6 +4876,16 @@ document.addEventListener("click", (event) => {
   if (activeView.id === "user-view") handleUserButton(button);
   if (activeView.id === "merchant-view") handleMerchantButton(button);
   if (activeView.id === "admin-view") handleAdminButton(button);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  const input = event.target.closest?.("#admin-transaction-search");
+  if (!input) return;
+  if (!requireAdminPermission("transactions")) return;
+  adminTransactionSearch = input.value || "";
+  renderAdminTransactions(adminTransactionFilter);
+  showToast("Transaction search applied");
 });
 
 document.querySelectorAll(".module-card").forEach((card) => {

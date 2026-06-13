@@ -53,6 +53,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   padding-top: 14px; color: var(--muted); font-size: 13px;
 }
 .pager-control .ghost-action, .pager-control .text-action { min-height: 34px; padding: 7px 12px; }
+.transaction-search { min-width: 280px; grid-column: span 2; }
 .login-choice {
   min-height: 300px; padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow);
