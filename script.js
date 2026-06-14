@@ -66,6 +66,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   rechargeEnabled: true,
   withdrawEnabled: true,
   noticeTemplate: "您的交易已处理完成",
+  adminWhatsapp: "",
   riskHandledIds: [],
 };
 const ADMIN_MODULES = {
@@ -446,6 +447,7 @@ function renderSystemConfig() {
     "#config-merchant-fee": systemConfig.merchantFeeRate,
     "#config-daily-limit": systemConfig.dailyTransactionLimit,
     "#config-notice-template": systemConfig.noticeTemplate,
+    "#config-admin-whatsapp": systemConfig.adminWhatsapp,
   };
   Object.entries(fields).forEach(([selector, value]) => {
     const node = document.querySelector(selector);
@@ -475,6 +477,7 @@ async function saveSystemConfig() {
     rechargeEnabled: document.querySelector("#config-recharge-enabled")?.value !== "off",
     withdrawEnabled: document.querySelector("#config-withdraw-enabled")?.value !== "off",
     noticeTemplate: document.querySelector("#config-notice-template")?.value.trim() || DEFAULT_SYSTEM_CONFIG.noticeTemplate,
+    adminWhatsapp: document.querySelector("#config-admin-whatsapp")?.value.trim() || "",
     updatedBy: currentUser.email,
     updatedAt: serverTimestamp(),
   };
@@ -1156,6 +1159,7 @@ async function createSupportTicket(data) {
   });
   await loadSupportTickets();
   if (activeRole === "admin") loadAdminOverview().catch(() => {});
+  return ticketId;
 }
 
 async function updateSupportTicket(ticketId, patch, auditAction = "更新客服工单") {
@@ -1234,15 +1238,20 @@ function openSupportReply(ticket) {
 
 async function loadAuditLogs() {
   const body = document.querySelector("#admin-audit-body");
-  if (body) body.innerHTML = '<tr><td colspan="7">正在加载操作日志...</td></tr>';
+  if (body) body.innerHTML = '<tr><td colspan="7">Loading audit logs...</td></tr>';
 
-  const snapshot = await getDocs(collection(db, "auditLogs"));
-  auditLogsCache = snapshot.docs
-    .map((item) => ({ id: item.id, ...item.data() }))
-    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
-  renderAuditLogs(auditLogsCache);
+  try {
+    const snapshot = await getDocs(collection(db, "auditLogs"));
+    auditLogsCache = snapshot.docs
+      .map((item) => ({ id: item.id, ...item.data() }))
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    renderAuditLogs(auditLogsCache);
+  } catch (error) {
+    auditLogsCache = [];
+    if (body) body.innerHTML = `<tr><td colspan="7">Audit logs cannot be loaded: ${error.code || error.message}</td></tr>`;
+    throw error;
+  }
 }
-
 async function writeAuditLog({ module, action, target = "-", detail = "-", result = "success" }) {
   if (!currentUser?.email || activeRole !== "admin") return;
   const logId = `L${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1794,6 +1803,7 @@ async function submitRechargeRequest(amount) {
     createdAt: new Date().toISOString(),
     updatedAt: serverTimestamp(),
   });
+  return requestId;
 }
 
 async function reviewRechargeRequest(requestId, approved, reviewInfo = {}) {
@@ -1948,6 +1958,7 @@ async function submitWithdrawalRequest(amount, bankAccount) {
       { merge: true }
     );
   });
+  return requestId;
 }
 
 async function reviewWithdrawalRequest(requestId, approved, reviewInfo = {}) {
@@ -2115,6 +2126,7 @@ async function submitRefundRequest(order) {
       { merge: true }
     );
   });
+  return requestId;
 }
 
 async function reviewRefundRequest(requestId, approved) {
@@ -2334,6 +2346,7 @@ async function submitSettlementRequest(amount) {
       { merge: true }
     );
   });
+  return requestId;
 }
 
 async function reviewSettlementRequest(requestId, approved, reviewInfo = {}) {
@@ -2508,6 +2521,7 @@ async function submitKycRequest(fullName, idNumber, phone) {
     },
     { merge: true }
   );
+  return requestId;
 }
 
 async function reviewKycRequest(requestId, approved) {
@@ -3523,6 +3537,45 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
+function normalizeWhatsappNumber(value = "") {
+  return String(value || "").replace(/[^\d]/g, "");
+}
+
+function openAdminWhatsappCall(context = {}) {
+  const phone = normalizeWhatsappNumber(systemConfig.adminWhatsapp);
+  if (!phone) {
+    showToast("Admin WhatsApp number is not configured. Please set it in admin system config.");
+    return;
+  }
+  const lines = [
+    "OneMinPay admin request",
+    `Type: ${context.type || "-"}`,
+    `Account: ${currentUser?.email || "-"}`,
+    context.id ? `Request ID: ${context.id}` : "",
+    context.amount ? `Amount: ${context.amount}` : "",
+    context.note ? `Note: ${context.note}` : "",
+    "Please review as soon as possible. Thank you.",
+  ].filter(Boolean);
+  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(lines.join("\n"))}`, "_blank", "noopener,noreferrer");
+}
+
+function promptAdminWhatsappCall(context = {}) {
+  openDialog(
+    "Call admin on WhatsApp",
+    `<p class="dialog-note">Your request has been submitted. Click below to open WhatsApp and notify the admin manually.</p>
+     <div class="detail-list">
+       <p><strong>Type:</strong> ${context.type || "-"}</p>
+       <p><strong>Request ID:</strong> ${context.id || "-"}</p>
+       <p><strong>Amount:</strong> ${context.amount || "-"}</p>
+     </div>`,
+    "Open WhatsApp",
+    () => {
+      openAdminWhatsappCall(context);
+      closeDialog();
+    }
+  );
+}
+
 function fillPaymentForm(payment) {
   const merchantInput = document.querySelector("#pay-merchant");
   const amountInput = document.querySelector("#pay-amount");
@@ -3813,9 +3866,9 @@ function handleUserButton(button) {
           return;
         }
         try {
-          await createSupportTicket({ type, title, message });
+          const requestId = await createSupportTicket({ type, title, message });
           closeDialog();
-          showToast("客服工单已提交");
+          promptAdminWhatsappCall({ type: "Support ticket", id: requestId, note: title });
         } catch (error) {
           showToast(error.message || "提交失败");
         }
@@ -3850,9 +3903,9 @@ function handleUserButton(button) {
           return;
         }
         try {
-          await submitKycRequest(fullName, idNumber, phone);
+          const requestId = await submitKycRequest(fullName, idNumber, phone);
           closeDialog();
-          showToast("实名资料已提交后台审核");
+          promptAdminWhatsappCall({ type: "KYC verification", id: requestId, note: fullName });
         } catch (error) {
           showToast(error.message || "实名提交失败");
         }
@@ -3894,9 +3947,9 @@ function handleUserButton(button) {
           return;
         }
         const points = myrToPoints(amount);
-        await submitRechargeRequest(amount);
+        const requestId = await submitRechargeRequest(amount);
         closeDialog();
-        showToast(`充值申请已提交：${formatRM(amount)} = ${formatMoney(points)}`);
+        promptAdminWhatsappCall({ type: "Recharge", id: requestId, amount: `${formatRM(amount)} / ${formatMoney(points)}` });
       }
     );
     return;
@@ -3931,9 +3984,9 @@ function handleUserButton(button) {
           return;
         }
         const points = Math.round(amount);
-        await submitWithdrawalRequest(points, bankAccount);
+        const requestId = await submitWithdrawalRequest(points, bankAccount);
         closeDialog();
-        showToast(`提现申请已提交：${formatMoney(points)} = ${formatRM(pointsToMyr(points))}`);
+        promptAdminWhatsappCall({ type: "Withdrawal", id: requestId, amount: `${formatMoney(points)} / ${formatRM(pointsToMyr(points))}`, note: bankAccount });
       }
     );
     return;
@@ -4058,7 +4111,7 @@ function handleMerchantButton(button) {
         try {
           await updateOwnMerchantProfile(profile);
           closeDialog();
-          showToast("Merchant profile saved");
+          promptAdminWhatsappCall({ type: "Merchant profile update", id: currentMerchant?.id || currentUser?.uid, note: profile.businessName });
         } catch (error) {
           showToast(error.message || "Save failed");
         }
@@ -4110,9 +4163,9 @@ function handleMerchantButton(button) {
         "提交退款",
         async () => {
           try {
-            await submitRefundRequest(order);
+            const requestId = await submitRefundRequest(order);
             closeDialog();
-            showToast("退款申请已提交后台审批");
+            promptAdminWhatsappCall({ type: "Refund request", id: requestId, amount: formatMoney(order?.amount || 0), note: `Order ${order?.id || "-"}` });
           } catch (error) {
             showToast(error.message || "退款申请提交失败");
           }
@@ -4152,9 +4205,9 @@ function handleMerchantButton(button) {
       "提交结算",
       async () => {
         try {
-          await submitSettlementRequest(amount);
+          const requestId = await submitSettlementRequest(amount);
           closeDialog();
-          showToast("结算申请已提交后台审批");
+          promptAdminWhatsappCall({ type: "Settlement request", id: requestId, amount: `${formatMoney(amount)} / ${formatRM(pointsToMyr(amount))}` });
         } catch (error) {
           showToast(error.message || "结算申请提交失败");
         }

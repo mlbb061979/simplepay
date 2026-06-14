@@ -15,9 +15,12 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn()
-        && exists(/databases/$(database)/documents/adminUsers/$(request.auth.token.email))
-        && get(/databases/$(database)/documents/adminUsers/$(request.auth.token.email)).data.enabled != false;
+      return isOwner()
+        || (
+          signedIn()
+          && exists(/databases/$(database)/documents/adminUsers/$(request.auth.token.email))
+          && get(/databases/$(database)/documents/adminUsers/$(request.auth.token.email)).data.enabled != false
+        );
     }
 
     // MVP wallet data. Client-side transfers currently need authenticated writes.
