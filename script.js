@@ -2098,7 +2098,7 @@ async function submitRefundRequest(order) {
       status: "pending",
       time: "刚刚",
       createdAt: new Date().toISOString(),
-      updatedAt: serverTimestamp(),
+      updatedAt: new Date().toISOString(),
     };
     const updatedOrders = orders.map((item) => (item.id === latestOrder.id ? { ...item, status: "refund_pending" } : item));
     const merchantRefunds = Array.isArray(merchantData.refunds) ? merchantData.refunds : [];
@@ -2316,7 +2316,7 @@ async function submitSettlementRequest(amount) {
       status: "pending",
       time: "刚刚",
       createdAt: new Date().toISOString(),
-      updatedAt: serverTimestamp(),
+      updatedAt: new Date().toISOString(),
     };
     const merchantSettlements = Array.isArray(merchantData.settlements) ? merchantData.settlements : [];
     const merchantTx = transactionItem("申请结算", "后台审批", `- ${formatMoney(amount)}`);
