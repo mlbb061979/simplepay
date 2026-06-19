@@ -1,7 +1,7 @@
 {
-  "name": "OneMinPay User",
-  "short_name": "OneMinPay",
-  "description": "OneMinPay user wallet, QR payment, receive code and transaction records.",
+  "name": "简单支付 用户端",
+  "short_name": "简单支付",
+  "description": "简单支付用户钱包、扫码付款、收款码和交易记录。",
   "start_url": "./index.html?role=user",
   "scope": "./",
   "display": "standalone",

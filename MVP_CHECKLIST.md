@@ -1,4 +1,4 @@
-# OneMinPay MVP Checklist
+# 简单支付 MVP Checklist
 
 ## 已完成
 - 用户、商家、后台三端独立登录和独立界面

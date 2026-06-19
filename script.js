@@ -3373,6 +3373,10 @@ function applyRoleEntryMode(role = activeRole) {
 
 async function loginAs(target) {
   if (!VALID_ROLES.includes(target)) return;
+  if (isEmbeddedAuthBrowser()) {
+    openExternalBrowserLoginHelp(target);
+    return;
+  }
   activeRole = target;
   sessionStorage.setItem("activeRole", target);
 
@@ -3537,6 +3541,36 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
+function isEmbeddedAuthBrowser() {
+  const ua = navigator.userAgent || "";
+  return /FBAN|FBAV|Instagram|Line|MicroMessenger|WhatsApp|Twitter|TikTok|; wv\)|\bwv\b/i.test(ua);
+}
+
+function roleEntryUrl(role = activeRole || "user") {
+  const url = new URL(window.location.href);
+  url.searchParams.set("role", VALID_ROLES.includes(role) ? role : "user");
+  return url.toString();
+}
+
+function openExternalBrowserLoginHelp(role = "user") {
+  const url = roleEntryUrl(role);
+  openDialog(
+    "请用 Chrome 打开",
+    `<p class="dialog-note">Google 不允许在 WhatsApp / Facebook / App 内置浏览器登录。请复制下面链接，用 Chrome、Safari 或系统浏览器打开后再登录。</p>
+     <input class="dialog-input" id="external-login-url" value="${url}" readonly />
+     <p class="dialog-note">手机操作：长按链接复制，打开 Chrome，粘贴网址。</p>`,
+    "复制链接",
+    async () => {
+      try {
+        await navigator.clipboard?.writeText(url);
+        showToast("登录链接已复制，请到 Chrome 打开");
+      } catch {
+        showToast("请手动复制链接到 Chrome 打开");
+      }
+    }
+  );
+}
+
 function normalizeWhatsappNumber(value = "") {
   return String(value || "").replace(/[^\d]/g, "");
 }
@@ -3548,7 +3582,7 @@ function openAdminWhatsappCall(context = {}) {
     return;
   }
   const lines = [
-    "OneMinPay admin request",
+    "简单支付 admin request",
     `Type: ${context.type || "-"}`,
     `Account: ${currentUser?.email || "-"}`,
     context.id ? `Request ID: ${context.id}` : "",
@@ -4941,6 +4975,10 @@ authButtons.forEach((button) => {
 
 if (VALID_ROLES.includes(activeRole)) {
   applyRoleEntryMode(activeRole);
+}
+
+if (isEmbeddedAuthBrowser()) {
+  showToast("Google 登录请用 Chrome/Safari 打开，不要用 WhatsApp 内置浏览器");
 }
 
 logoutButton.addEventListener("click", logout);

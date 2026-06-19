@@ -1,7 +1,7 @@
 {
-  "name": "OneMinPay Merchant",
-  "short_name": "Merchant",
-  "description": "OneMinPay merchant QR, orders, refunds, settlement and notifications.",
+  "name": "简单支付 商家端",
+  "short_name": "商家端",
+  "description": "简单支付商家收款码、订单、退款、结算和通知。",
   "start_url": "./index.html?role=merchant",
   "scope": "./",
   "display": "standalone",

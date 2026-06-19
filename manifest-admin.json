@@ -1,7 +1,7 @@
 {
-  "name": "OneMinPay Admin",
-  "short_name": "Admin",
-  "description": "OneMinPay admin console for approvals, reports, risk, support and settings.",
+  "name": "简单支付 后台端",
+  "short_name": "后台端",
+  "description": "简单支付后台审批、报表、风控、客服和系统设置。",
   "start_url": "./index.html?role=admin",
   "scope": "./",
   "display": "standalone",

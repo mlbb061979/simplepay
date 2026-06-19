@@ -1,4 +1,4 @@
-# OneMinPay MVP 测试计划 / MVP Test Plan
+# 简单支付 MVP 测试计划 / MVP Test Plan
 
 每次发布到 GitHub Pages 前，按这份清单测试。
 Use this checklist before every GitHub Pages release.
@@ -83,10 +83,10 @@ $node = "C:\Users\PC19\.cache\codex-runtimes\codex-primary-runtime\dependencies\
 - 测试以下网址。 / Test these URLs.
 
 ```text
-https://mlbb061979.github.io/oneminpay/
-https://mlbb061979.github.io/oneminpay/index.html?role=user
-https://mlbb061979.github.io/oneminpay/index.html?role=merchant
-https://mlbb061979.github.io/oneminpay/index.html?role=admin
+https://mlbb061979.github.io/simple-pay/
+https://mlbb061979.github.io/simple-pay/index.html?role=user
+https://mlbb061979.github.io/simple-pay/index.html?role=merchant
+https://mlbb061979.github.io/simple-pay/index.html?role=admin
 ```
 
 ## 7. 当前 MVP 限制 / Known MVP Limits
