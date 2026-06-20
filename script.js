@@ -1,4 +1,4 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+﻿import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
   getAuth,
   GoogleAuthProvider,
@@ -69,6 +69,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   adminWhatsapp: "",
   riskHandledIds: [],
 };
+const USER_TRANSFER_ENABLED = false;
 const ADMIN_MODULES = {
   users: "用户管理",
   merchants: "商家管理",
@@ -372,6 +373,7 @@ function parsePaymentCode(rawCode) {
       const recipientUserId = url.searchParams.get("userId");
       const name = url.searchParams.get("name") || "个人收款码";
       if (recipientUserId) {
+        if (!USER_TRANSFER_ENABLED) return { kind: "disabled-receive", recipientUserId, merchant: name, amount: null, code: raw };
         return { kind: "receive", recipientUserId, merchant: name, amount: null, code: raw };
       }
     }
@@ -384,13 +386,14 @@ function parsePaymentCode(rawCode) {
   } catch {
     const parts = parseKeyValueCode(raw);
     if (parts.userid || parts.user) {
-      return {
-        kind: "receive",
+      const receivePayment = {
         recipientUserId: parts.userid || parts.user,
         merchant: parts.name || "个人收款码",
         amount: parseAmount(parts.amount),
         code: raw,
       };
+      if (!USER_TRANSFER_ENABLED) return { ...receivePayment, kind: "disabled-receive" };
+      return { ...receivePayment, kind: "receive" };
     }
 
     const merchant = parts.merchant || parts.m || parts.shop;
@@ -400,7 +403,6 @@ function parsePaymentCode(rawCode) {
 
   return null;
 }
-
 function createReceiveCode(user = currentUser) {
   if (!user) return "";
   const name = encodeURIComponent(user.displayName || user.email || "User");
@@ -3616,17 +3618,18 @@ function fillPaymentForm(payment) {
   const codeInput = document.querySelector("#pay-code");
   const result = document.querySelector("#scan-result");
 
-  if (merchantInput) merchantInput.value = payment.merchant || "个人收款码";
+  if (merchantInput) merchantInput.value = payment.merchant || "";
   if (amountInput) amountInput.value = payment.amount ? String(Math.round(payment.amount)) : "";
   if (codeInput) codeInput.value = payment.code || "";
   if (codeInput) codeInput.dataset.kind = payment.kind || "";
   if (codeInput) codeInput.dataset.recipientUserId = payment.recipientUserId || "";
   if (codeInput) codeInput.dataset.merchantId = payment.merchantId || "";
   if (result) {
-    result.textContent =
-      payment.kind === "receive"
-        ? `已识别个人收款码：${payment.merchant}，请输入转账金额`
-        : `已识别商家付款码：${payment.merchant}，${formatMoney(payment.amount)}`;
+    if (payment.kind === "disabled-receive" || payment.kind === "receive") {
+      result.textContent = "个人扫码转账功能已停用，请扫描商家付款码";
+    } else {
+      result.textContent = `已识别商家付款码：${payment.merchant}${payment.amount ? `，${formatMoney(payment.amount)}` : ""}`;
+    }
   }
 }
 
@@ -3702,6 +3705,32 @@ async function startScanner() {
   }
 }
 
+async function scanQrFromImageFile(file) {
+  const result = document.querySelector("#scan-result");
+  if (!file) return;
+  if (!("BarcodeDetector" in window)) {
+    if (result) result.textContent = "当前浏览器不支持图片二维码识别，请使用 Chrome 或直接打开摄像头扫码。";
+    return;
+  }
+
+  try {
+    if (result) result.textContent = "正在识别图片二维码...";
+    const detector = new BarcodeDetector({ formats: ["qr_code"] });
+    const bitmap = await createImageBitmap(file);
+    const codes = await detector.detect(bitmap);
+    bitmap.close?.();
+    const payment = parsePaymentCode(codes[0]?.rawValue);
+    if (!payment) {
+      if (result) result.textContent = "没有从图片中识别到有效的商家付款码";
+      return;
+    }
+    fillPaymentForm(payment);
+    showToast(payment.kind === "disabled-receive" ? "个人转账已停用" : "已从图片识别二维码");
+  } catch (error) {
+    if (result) result.textContent = `图片识别失败：${error.message || error.name}`;
+  }
+}
+
 function stopScanner() {
   if (scannerTimer) window.clearInterval(scannerTimer);
   scannerTimer = null;
@@ -3740,6 +3769,11 @@ async function confirmScanPayment() {
   const payableAmount = Math.max(0, Number(amount || 0) - couponDiscount);
   const recipientUserId = codeInput?.dataset.recipientUserId;
   const kind = codeInput?.dataset.kind;
+
+  if (kind === "disabled-receive" || kind === "receive") {
+    showToast("用户扫码转账功能已停用，请扫描商家付款码");
+    return;
+  }
 
   if (!amount) {
     showToast(`请输入正确的付款金额，当前读取到：${amountInput?.value || "空"}`);
@@ -4043,11 +4077,12 @@ function handleUserButton(button) {
       </div>
       <div class="scanner-actions">
         <button class="text-action" id="start-scanner" type="button">打开摄像头扫码</button>
-        <button class="text-action" id="use-demo-code" type="button">使用测试码</button>
+        <button class="text-action" id="scan-image-button" type="button">从相册扫码</button>
+        <input class="hidden" id="qr-image-input" type="file" accept="image/*" />
       </div>
-      <p class="dialog-note" id="scan-result">可扫描商家付款码，或扫描其他用户的固定收款码。</p>
+      <p class="dialog-note" id="scan-result">请扫描商家付款码，或从手机相册选择二维码图片。个人扫码转账已停用。</p>
        <label class="field-label">付款码内容</label>
-       <input class="dialog-input" id="pay-code" placeholder="粘贴或输入商家付款码/用户收款码" />
+       <input class="dialog-input" id="pay-code" placeholder="粘贴或输入商家付款码" />
        <label class="field-label">对象</label>
        <input class="dialog-input" id="pay-merchant" value="" placeholder="扫码后自动填入" />
        <label class="field-label">付款积分</label>
@@ -4056,16 +4091,9 @@ function handleUserButton(button) {
       "确认付款",
       confirmScanPayment
     );
-    document.querySelector("#start-scanner").addEventListener("click", startScanner);
-    document.querySelector("#use-demo-code").addEventListener("click", () => {
-      fillPaymentForm({
-        kind: "merchant",
-        merchant: "MY Coffee",
-        amount: 1280,
-        code: "oneminpay://pay?merchant=MY%20Coffee&amount=1280",
-      });
-      showToast("已填入测试付款码");
-    });
+    document.querySelector("#start-scanner")?.addEventListener("click", startScanner);
+    document.querySelector("#scan-image-button")?.addEventListener("click", () => document.querySelector("#qr-image-input")?.click());
+    document.querySelector("#qr-image-input")?.addEventListener("change", (event) => scanQrFromImageFile(event.target.files?.[0]));
     return;
   }
 
@@ -5104,3 +5132,5 @@ onAuthStateChanged(auth, async (user) => {
   if (activeRole === "user") await attachWallet(user);
   if (activeRole === "merchant") await attachMerchant(user);
 });
+
+
