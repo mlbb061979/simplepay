@@ -71,6 +71,7 @@ const DEFAULT_SYSTEM_CONFIG = {
 };
 const USER_TRANSFER_ENABLED = false;
 const USER_WITHDRAWAL_ENABLED = false;
+const USER_RECEIVE_CODE_ENABLED = false;
 const ADMIN_MODULES = {
   users: "用户管理",
   merchants: "商家管理",
@@ -405,19 +406,36 @@ function parsePaymentCode(rawCode) {
   return null;
 }
 function createReceiveCode(user = currentUser) {
+  if (!USER_RECEIVE_CODE_ENABLED) return "";
   if (!user) return "";
   const name = encodeURIComponent(user.displayName || user.email || "User");
   return `oneminpay://receive?userId=${encodeURIComponent(user.uid)}&name=${name}`;
 }
 
+function disabledReceiveQrImage() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220"><rect width="220" height="220" fill="#f1f5f3"/><rect x="18" y="18" width="184" height="184" rx="8" fill="#ffffff" stroke="#d6e0dc" stroke-width="2"/><text x="110" y="105" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" font-weight="700" fill="#6b7f76">OFF</text><text x="110" y="135" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#6b7f76">Receive disabled</text></svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
 function updateReceiveQr(receiveCode) {
   const qrImage = document.querySelector("#receive-qr-image");
   const label = document.querySelector("#receive-code-label");
-  if (!receiveCode || !qrImage || !label) return;
+  if (!qrImage || !label) return;
+
+  if (!USER_RECEIVE_CODE_ENABLED) {
+    qrImage.src = disabledReceiveQrImage();
+    qrImage.dataset.code = "";
+    qrImage.classList.add("is-disabled");
+    label.textContent = "用户收款码已停用，积分只能用于消费";
+    return;
+  }
+
+  if (!receiveCode) return;
 
   const userId = new URL(receiveCode).searchParams.get("userId") || "";
   qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=10&data=${encodeURIComponent(receiveCode)}`;
   qrImage.dataset.code = receiveCode;
+  qrImage.classList.remove("is-disabled");
   label.textContent = `固定收款ID: ${userId.slice(0, 10)}...`;
 }
 
@@ -3216,13 +3234,14 @@ async function ensureWallet(user) {
   const ref = walletRef(user);
   const snap = await getDoc(ref);
   const receiveCode = createReceiveCode(user);
+  const receiveCodePatch = USER_RECEIVE_CODE_ENABLED ? { receiveCode } : {};
 
   if (!snap.exists()) {
     await setDoc(ref, {
       balance: 0,
       email: user.email,
       displayName: user.displayName || "",
-      receiveCode,
+      ...receiveCodePatch,
       role: "user",
       transactions: [],
       status: "active",
@@ -3234,7 +3253,7 @@ async function ensureWallet(user) {
   }
 
   const data = snap.data();
-  if (!data.receiveCode) {
+  if (USER_RECEIVE_CODE_ENABLED && !data.receiveCode) {
     await setDoc(ref, { receiveCode, updatedAt: serverTimestamp() }, { merge: true });
   }
 }
@@ -3265,7 +3284,7 @@ async function saveOwnWallet(nextBalance, transactions = userTransactions) {
       balance: nextBalance,
       email: currentUser.email,
       displayName: currentUser.displayName || "",
-      receiveCode: createReceiveCode(currentUser),
+      ...(USER_RECEIVE_CODE_ENABLED ? { receiveCode: createReceiveCode(currentUser) } : {}),
       role: "user",
       transactions: transactions.slice(0, 30),
       updatedAt: serverTimestamp(),
@@ -3985,6 +4004,10 @@ function handleUserButton(button) {
   }
 
   if (button.id === "copy-receive-code") {
+    if (!USER_RECEIVE_CODE_ENABLED) {
+      showToast("用户收款码已停用，积分只能用于消费");
+      return;
+    }
     const code = document.querySelector("#receive-qr-image")?.dataset.code;
     if (!code) {
       showToast("收款码还未生成，请先完成登录");

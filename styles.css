@@ -158,6 +158,10 @@ h2 { font-size: 17px; }
   width: 190px; height: 190px; padding: 10px; border: 8px solid #f1f5f3;
   border-radius: 8px; background: #fff; object-fit: contain;
 }
+.receive-qr-image.is-disabled {
+  opacity: .72;
+  filter: grayscale(1);
+}
 .qr-code {
   display: grid; grid-template-columns: repeat(4, 26px); gap: 7px; padding: 16px;
   border: 8px solid #f1f5f3; border-radius: 8px; background: #fff;
