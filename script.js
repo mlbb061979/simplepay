@@ -70,6 +70,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   riskHandledIds: [],
 };
 const USER_TRANSFER_ENABLED = false;
+const USER_WITHDRAWAL_ENABLED = false;
 const ADMIN_MODULES = {
   users: "用户管理",
   merchants: "商家管理",
@@ -1921,6 +1922,7 @@ async function loadWithdrawalRequests() {
 }
 
 async function submitWithdrawalRequest(amount, bankAccount) {
+  if (!USER_WITHDRAWAL_ENABLED) throw new Error("用户提现功能已停用，积分只能用于消费");
   if (walletStatus === "frozen") throw new Error("账户已被冻结，无法提交提现申请");
   if (amount > walletBalance) throw new Error("钱包余额不足，无法提交提现申请");
 
@@ -4024,6 +4026,10 @@ function handleUserButton(button) {
   }
 
   if (button.id === "withdraw-button" || text.includes("提现")) {
+    if (!USER_WITHDRAWAL_ENABLED) {
+      showToast("用户提现功能已停用，积分只能用于消费");
+      return;
+    }
     if (systemConfig.maintenanceMode || !systemConfig.withdrawEnabled) {
       showToast(systemConfig.maintenanceMode ? "系统维护中，暂不能提现" : "提现通道已关闭");
       return;
