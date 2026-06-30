@@ -23,72 +23,185 @@ service cloud.firestore {
         );
     }
 
-    // MVP wallet data. Client-side transfers currently need authenticated writes.
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function secureMoneyEnabled() {
+      return exists(/databases/$(database)/documents/systemConfig/main)
+        && get(/databases/$(database)/documents/systemConfig/main).data.secureMoneyFunctionsEnabled == true;
+    }
+
+    function walletProfileUpdateIsSafe() {
+      return request.resource.data.balance == resource.data.balance
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.dailyUsage == resource.data.dailyUsage
+        && request.resource.data.transactions == resource.data.transactions
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "email",
+          "displayName",
+          "receiveCode",
+          "role",
+          "kycStatus",
+          "kycFullName",
+          "kycIdNumber",
+          "kycPhone",
+          "updatedAt"
+        ]);
+    }
+
+    function merchantProfileUpdateIsSafe() {
+      return request.resource.data.status == resource.data.status
+        && request.resource.data.totalReceived == resource.data.totalReceived
+        && request.resource.data.settlementBalance == resource.data.settlementBalance
+        && request.resource.data.refundTotal == resource.data.refundTotal
+        && request.resource.data.orders == resource.data.orders
+        && request.resource.data.refunds == resource.data.refunds
+        && request.resource.data.settlements == resource.data.settlements
+        && request.resource.data.transactions == resource.data.transactions
+        && request.resource.data.notifications == resource.data.notifications
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "email",
+          "displayName",
+          "businessName",
+          "contactName",
+          "contactPhone",
+          "businessAddress",
+          "settlementBank",
+          "settlementAccount",
+          "merchantCode",
+          "updatedAt"
+        ]);
+    }
+
     match /wallets/{userId} {
-      allow read, create, update: if signedIn();
+      allow read: if isAdmin() || isSelf(userId);
+      allow create: if isAdmin()
+        || (
+          isSelf(userId)
+          && request.resource.data.balance == 0
+          && request.resource.data.status == "active"
+        );
+      allow update: if isAdmin()
+        || (
+          isSelf(userId)
+          && (
+            !secureMoneyEnabled()
+            || walletProfileUpdateIsSafe()
+          )
+        );
       allow delete: if isAdmin();
     }
 
-    // Merchant profiles, QR payments, orders, refunds and settlements.
     match /merchants/{merchantId} {
-      allow read, create, update: if signedIn();
+      allow read: if signedIn();
+      allow create: if isAdmin()
+        || (
+          isSelf(merchantId)
+          && request.resource.data.status == "pending"
+          && request.resource.data.totalReceived == 0
+          && request.resource.data.settlementBalance == 0
+          && request.resource.data.refundTotal == 0
+        );
+      allow update: if isAdmin()
+        || (
+          signedIn()
+          && (
+            !secureMoneyEnabled()
+            || (isSelf(merchantId) && merchantProfileUpdateIsSafe())
+          )
+        );
       allow delete: if isAdmin();
     }
 
-    // User/admin workflow collections.
+    match /merchantOrders/{orderId} {
+      allow read: if isAdmin()
+        || (
+          signedIn()
+          && (
+            resource.data.customerId == request.auth.uid
+            || resource.data.merchantId == request.auth.uid
+          )
+        );
+      allow write: if false;
+    }
+
     match /rechargeRequests/{requestId} {
-      allow read, write: if signedIn();
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn()
+        && !secureMoneyEnabled()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == "pending";
+      allow update: if isAdmin() && !secureMoneyEnabled();
+      allow delete: if isAdmin();
     }
 
     match /withdrawRequests/{requestId} {
-      allow read, write: if signedIn();
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn()
+        && !secureMoneyEnabled()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == "pending";
+      allow update: if isAdmin() && !secureMoneyEnabled();
+      allow delete: if isAdmin();
     }
 
     match /refundRequests/{requestId} {
-      allow read, write: if signedIn();
+      allow read: if isAdmin()
+        || (
+          signedIn()
+          && (
+            resource.data.customerId == request.auth.uid
+            || resource.data.merchantId == request.auth.uid
+          )
+        );
+      allow create, update: if signedIn() && !secureMoneyEnabled();
+      allow delete: if isAdmin();
     }
 
     match /settlementRequests/{requestId} {
-      allow read, write: if signedIn();
+      allow read: if isAdmin() || (signedIn() && resource.data.merchantId == request.auth.uid);
+      allow create, update: if signedIn() && !secureMoneyEnabled();
+      allow delete: if isAdmin();
     }
 
     match /kycRequests/{requestId} {
-      allow read, write: if signedIn();
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAdmin();
     }
 
     match /supportTickets/{ticketId} {
-      allow read, write: if signedIn();
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAdmin();
     }
 
-    // Unified transaction ledger added for admin search/export.
     match /transactions/{transactionId} {
-      allow read, write: if signedIn();
+      allow read: if isAdmin() || (signedIn() && resource.data.accountId == request.auth.uid);
+      allow create, update: if signedIn() && !secureMoneyEnabled();
+      allow delete: if isAdmin();
     }
 
-    // Marketing content is readable by signed-in users; editable by admins.
     match /marketingItems/{itemId} {
       allow read: if signedIn();
       allow write: if isAdmin();
     }
 
-    // Audit logs are admin-only.
     match /auditLogs/{logId} {
       allow read, write: if isAdmin();
     }
 
-    // Admin authorization. Owner can bootstrap and manage admins.
     match /adminUsers/{email} {
-      allow read: if signedIn();
+      allow read: if signedIn() && (request.auth.token.email == email || isAdmin());
       allow write: if isOwner();
     }
 
-    // System config and backup metadata.
     match /systemConfig/{configId} {
       allow read: if signedIn();
       allow write: if isAdmin();
     }
 
-    // Deny anything unknown by default.
     match /{document=**} {
       allow read, write: if false;
     }

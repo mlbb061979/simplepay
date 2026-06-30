@@ -41,3 +41,7 @@ Before real public launch, move all balance-changing actions to Cloud Functions:
 - settlement approval
 
 After that, Firestore rules should prevent normal users from directly changing balances, transactions, merchant settlement balances and admin approval status.
+
+The trusted functions and staged rules are now included in this project. Follow
+`SECURE_MONEY_MIGRATION.md`; do not set `secureMoneyFunctionsEnabled` to `true` until the functions have been
+deployed and the secure test checklist has passed.

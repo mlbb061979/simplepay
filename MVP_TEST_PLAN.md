@@ -83,10 +83,10 @@ $node = "C:\Users\PC19\.cache\codex-runtimes\codex-primary-runtime\dependencies\
 - 测试以下网址。 / Test these URLs.
 
 ```text
-https://mlbb061979.github.io/simple-pay/
-https://mlbb061979.github.io/simple-pay/index.html?role=user
-https://mlbb061979.github.io/simple-pay/index.html?role=merchant
-https://mlbb061979.github.io/simple-pay/index.html?role=admin
+https://mlbb061979.github.io/simplepay/
+https://mlbb061979.github.io/simplepay/index.html?role=user
+https://mlbb061979.github.io/simplepay/index.html?role=merchant
+https://mlbb061979.github.io/simplepay/index.html?role=admin
 ```
 
 ## 7. 当前 MVP 限制 / Known MVP Limits
@@ -95,3 +95,19 @@ https://mlbb061979.github.io/simple-pay/index.html?role=admin
 - Firestore 规则为了测试，对登录测试账号相对宽松。 / Firestore rules are intentionally permissive for signed-in test accounts.
 - 正式上线前，钱包余额变化应该迁移到 Cloud Functions。 / Production launch should move wallet balance changes to Cloud Functions.
 - 真实支付网关、银行出款和正式 KYC 服务还没有接入。 / Real payment gateway, bank payout and official KYC provider are not connected yet.
+
+## Secure money functions
+
+Run these tests before setting `systemConfig/main.secureMoneyFunctionsEnabled` to `true`:
+
+- Submit the same merchant payment twice with one `externalOrderId`; the wallet is deducted once.
+- Reuse that `externalOrderId` with another amount, user or merchant; the request is rejected.
+- Confirm an approved merchant receives an independent `merchantOrders` record and one pair of ledger records.
+- Confirm frozen wallets, insufficient balances and daily-limit violations are rejected.
+- Submit and approve a refund once; a repeated approval does not credit the wallet again.
+- Reject a refund; the original order returns to `approved`.
+- Submit and approve a settlement with a payout reference.
+- Reject a settlement; the reserved settlement balance is returned once.
+- Approve and reject recharge requests through Cloud Functions.
+- Confirm browser writes to balances, embedded orders and transaction ledgers fail after secure mode is enabled.
+- Confirm profile, KYC, support and administrator workflows remain available.

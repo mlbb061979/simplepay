@@ -22,6 +22,10 @@ import {
   setDoc,
   startAfter,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import {
+  getFunctions,
+  httpsCallable,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCaPryZlkhPvzFC0OngXmA-hhXDsDx814U",
@@ -36,6 +40,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const cloudFunctions = getFunctions(app);
 const googleProvider = new GoogleAuthProvider();
 
 const loginGateway = document.querySelector("#login-gateway");
@@ -68,6 +73,7 @@ const DEFAULT_SYSTEM_CONFIG = {
   noticeTemplate: "您的交易已处理完成",
   adminWhatsapp: "",
   riskHandledIds: [],
+  secureMoneyFunctionsEnabled: false,
 };
 const USER_TRANSFER_ENABLED = false;
 const USER_WITHDRAWAL_ENABLED = false;
@@ -155,6 +161,33 @@ function formatRM(amount) {
 
 function csvCell(value) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
+function sanitizeHtml(markup) {
+  const template = document.createElement("template");
+  template.innerHTML = String(markup ?? "");
+  template.content.querySelectorAll("script, style, iframe, object, embed, link, meta, base").forEach((node) => node.remove());
+  template.content.querySelectorAll("*").forEach((node) => {
+    for (const attribute of [...node.attributes]) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim().toLowerCase();
+      const normalizedUrl = value.replace(/[\u0000-\u0020]+/g, "");
+      if (
+        name.startsWith("on")
+        || name === "srcdoc"
+        || name === "style"
+        || (["href", "src", "action", "formaction", "xlink:href"].includes(name)
+          && (
+            normalizedUrl.startsWith("javascript:")
+            || normalizedUrl.startsWith("vbscript:")
+            || normalizedUrl.startsWith("data:text/html")
+          ))
+      ) {
+        node.removeAttribute(attribute.name);
+      }
+    }
+  });
+  return template.innerHTML;
 }
 
 function downloadCsv(filename, rows) {
@@ -370,6 +403,16 @@ function parsePaymentCode(rawCode) {
 
   try {
     const url = raw.includes("://") ? new URL(raw) : new URL(`https://pay.local/?${raw}`);
+    const intentId = url.searchParams.get("intentId");
+    if ((url.hostname === "pos" || url.pathname.includes("pos")) && intentId) {
+      return {
+        kind: "pos-intent",
+        intentId,
+        merchant: "简单POS",
+        amount: null,
+        code: raw
+      };
+    }
     const action = url.hostname === "receive" || url.pathname.includes("receive") ? "receive" : "pay";
     if (action === "receive") {
       const recipientUserId = url.searchParams.get("userId");
@@ -457,6 +500,10 @@ function renderSystemConfig() {
   setText("#config-fee-summary", systemConfig.merchantFeeRate || DEFAULT_SYSTEM_CONFIG.merchantFeeRate);
   setText("#config-limit-summary", formatMoney(systemConfig.dailyTransactionLimit || 0));
   setText("#config-maintenance-summary", systemConfig.maintenanceMode ? "开启" : "关闭");
+  setText(
+    "#config-security-summary",
+    systemConfig.secureMoneyFunctionsEnabled ? "云函数保护" : "演示模式"
+  );
 
   setText("#backup-collection-count", String(systemConfig.lastBackup?.collectionCount || 0));
   setText("#backup-document-count", String(systemConfig.lastBackup?.documentCount || 0));
@@ -499,6 +546,7 @@ async function saveSystemConfig() {
     withdrawEnabled: document.querySelector("#config-withdraw-enabled")?.value !== "off",
     noticeTemplate: document.querySelector("#config-notice-template")?.value.trim() || DEFAULT_SYSTEM_CONFIG.noticeTemplate,
     adminWhatsapp: document.querySelector("#config-admin-whatsapp")?.value.trim() || "",
+    secureMoneyFunctionsEnabled: systemConfig.secureMoneyFunctionsEnabled === true,
     updatedBy: currentUser.email,
     updatedAt: serverTimestamp(),
   };
@@ -515,6 +563,16 @@ async function saveSystemConfig() {
 
 function walletRef(user = currentUser) {
   return doc(db, "wallets", user.uid);
+}
+
+function usesSecureMoneyFunctions() {
+  return systemConfig.secureMoneyFunctionsEnabled === true;
+}
+
+async function callMoneyFunction(name, data) {
+  const callable = httpsCallable(cloudFunctions, name);
+  const result = await callable(data);
+  return result.data;
 }
 
 function normalizeEmail(email) {
@@ -643,7 +701,7 @@ async function authorizeAdminEmail(email, role = "ops") {
 
 function emptyTransactionRow(message) {
   if (!userTransactionsBody) return;
-  userTransactionsBody.innerHTML = `<tr><td colspan="5">${message}</td></tr>`;
+  userTransactionsBody.innerHTML = sanitizeHtml(`<tr><td colspan="5">${message}</td></tr>`);
 }
 
 function userTransactionMatchesFilter(item, filter = userTransactionFilter) {
@@ -665,7 +723,7 @@ function renderUserTransactions(transactions = []) {
     return;
   }
 
-  userTransactionsBody.innerHTML = visibleTransactions
+  userTransactionsBody.innerHTML = sanitizeHtml(visibleTransactions
     .slice(0, 30)
     .map(
       (item) => `
@@ -678,7 +736,7 @@ function renderUserTransactions(transactions = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 function statusTag(status) {
@@ -749,7 +807,7 @@ function renderAdminUsers(users = []) {
     return;
   }
 
-  body.innerHTML = users
+  body.innerHTML = sanitizeHtml(users
     .map(
       (user) => `
         <tr>
@@ -767,7 +825,7 @@ function renderAdminUsers(users = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 function renderPagerControl(type, panelSelector, loadedCount = 0) {
@@ -782,13 +840,13 @@ function renderPagerControl(type, panelSelector, loadedCount = 0) {
     pager.dataset.pager = type;
     panel.appendChild(pager);
   }
-  pager.innerHTML = `
+  pager.innerHTML = sanitizeHtml(`
     <span>Loaded ${loadedCount}</span>
     <button class="ghost-action pager-action" data-pager="${type}" data-action="more" type="button" ${!state.hasMore || state.loading ? "disabled" : ""}>
       ${state.loading ? "Loading..." : state.hasMore ? "Load more" : "No more"}
     </button>
     <button class="text-action pager-action" data-pager="${type}" data-action="reset" type="button">Refresh first page</button>
-  `;
+  `);
 }
 
 function roleLabel(role) {
@@ -810,7 +868,7 @@ function renderPermissionAdmins(admins = []) {
     return;
   }
 
-  body.innerHTML = admins
+  body.innerHTML = sanitizeHtml(admins
     .map((admin) => {
       const permissions = Array.isArray(admin.permissions) ? admin.permissions : ADMIN_ROLE_PRESETS[admin.role || "ops"] || [];
       const permissionText = admin.role === "owner" ? "全部权限" : permissions.map((item) => ADMIN_MODULES[item] || item).join("、");
@@ -834,7 +892,7 @@ function renderPermissionAdmins(admins = []) {
         </tr>
       `;
     })
-    .join("");
+    .join(""));
 }
 
 function auditResultTag(result) {
@@ -889,7 +947,7 @@ function renderAuditLogs(logs = []) {
     return;
   }
 
-  body.innerHTML = visibleLogs
+  body.innerHTML = sanitizeHtml(visibleLogs
     .slice(0, 120)
     .map(
       (log) => `
@@ -904,7 +962,7 @@ function renderAuditLogs(logs = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 function marketingTypeLabel(type) {
@@ -957,7 +1015,7 @@ function renderMarketingItems(items = []) {
     return;
   }
 
-  body.innerHTML = items
+  body.innerHTML = sanitizeHtml(items
     .map(
       (item) => `
         <tr>
@@ -977,7 +1035,7 @@ function renderMarketingItems(items = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 function openMarketingEditor() {
@@ -1123,7 +1181,7 @@ function renderSupportTickets(tickets = []) {
     return;
   }
 
-  body.innerHTML = tickets
+  body.innerHTML = sanitizeHtml(tickets
     .map(
       (ticket) => `
         <tr>
@@ -1149,7 +1207,7 @@ function renderSupportTickets(tickets = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadSupportTickets() {
@@ -1269,7 +1327,7 @@ async function loadAuditLogs() {
     renderAuditLogs(auditLogsCache);
   } catch (error) {
     auditLogsCache = [];
-    if (body) body.innerHTML = `<tr><td colspan="7">Audit logs cannot be loaded: ${error.code || error.message}</td></tr>`;
+    if (body) body.innerHTML = sanitizeHtml(`<tr><td colspan="7">Audit logs cannot be loaded: ${error.code || error.message}</td></tr>`);
     throw error;
   }
 }
@@ -1420,7 +1478,7 @@ function renderMerchants(merchants = []) {
     return;
   }
 
-  body.innerHTML = merchants
+  body.innerHTML = sanitizeHtml(merchants
     .map((merchant) => {
       const status = merchant.status || "pending";
       const profileComplete = isMerchantProfileComplete(merchant);
@@ -1450,7 +1508,7 @@ function renderMerchants(merchants = []) {
         </tr>
       `;
     })
-    .join("");
+    .join(""));
 }
 
 function setText(selector, value) {
@@ -1462,10 +1520,10 @@ function renderList(selector, items, emptyText, mapper) {
   const list = document.querySelector(selector);
   if (!list) return;
   if (!items.length) {
-    list.innerHTML = `<li><span>${emptyText}</span><strong>-</strong></li>`;
+    list.innerHTML = sanitizeHtml(`<li><span>${emptyText}</span><strong>-</strong></li>`);
     return;
   }
-  list.innerHTML = items.slice(0, 8).map(mapper).join("");
+  list.innerHTML = sanitizeHtml(items.slice(0, 8).map(mapper).join(""));
 }
 
 function renderMerchantDashboard(data = {}) {
@@ -1506,7 +1564,7 @@ function renderMerchantDashboard(data = {}) {
 
   const body = document.querySelector("#merchant-orders-body");
   if (body) {
-    body.innerHTML = orders.length
+    body.innerHTML = sanitizeHtml(orders.length
       ? orders
           .slice(0, 20)
           .map(
@@ -1529,7 +1587,7 @@ function renderMerchantDashboard(data = {}) {
             `
           )
           .join("")
-      : '<tr><td colspan="6">暂无订单</td></tr>';
+      : '<tr><td colspan="6">暂无订单</td></tr>');
   }
 
   renderList(
@@ -1563,6 +1621,16 @@ async function payMerchant(merchantId, merchantName, amount, coupon = null) {
   const payableAmount = Math.max(0, amount - discount);
   const couponText = coupon ? `，优惠 ${formatMoney(discount)}` : "";
   const payerTx = transactionItem("商家付款", merchantName, `- ${formatMoney(payableAmount)}${couponText}`);
+
+  if (usesSecureMoneyFunctions()) {
+    return callMoneyFunction("createMerchantPayment", {
+      merchantId,
+      merchantName,
+      amount: Math.round(payableAmount),
+      externalOrderId: orderId,
+      sourceSystem: "simplepay"
+    });
+  }
 
   await runTransaction(db, async (transaction) => {
     const payerSnap = await transaction.get(payerRef);
@@ -1681,7 +1749,7 @@ async function loadMerchants(options = {}) {
     state.loading = false;
     renderPagerControl("merchants", "#admin-merchant-management", merchantsCache.length);
     if (body) {
-      body.innerHTML = `<tr><td colspan="5">商家数据加载失败：${error.code || error.message}</td></tr>`;
+      body.innerHTML = sanitizeHtml(`<tr><td colspan="5">商家数据加载失败：${error.code || error.message}</td></tr>`);
     }
     throw error;
   }
@@ -1776,7 +1844,7 @@ function renderRechargeRequests(requests = []) {
     return;
   }
 
-  body.innerHTML = requests
+  body.innerHTML = sanitizeHtml(requests
     .map(
       (request) => `
         <tr>
@@ -1795,7 +1863,7 @@ function renderRechargeRequests(requests = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadRechargeRequests() {
@@ -1811,8 +1879,16 @@ async function loadRechargeRequests() {
 
 async function submitRechargeRequest(amount) {
   if (walletStatus === "frozen") throw new Error("账户已被冻结，无法提交充值申请");
-  const pointsAmount = myrToPoints(amount);
   const requestId = `${currentUser.uid}-${Date.now()}`;
+  if (usesSecureMoneyFunctions()) {
+    const result = await callMoneyFunction("submitRechargeRequest", {
+      myrAmount: Number(amount),
+      externalRequestId: requestId
+    });
+    return result.id;
+  }
+
+  const pointsAmount = myrToPoints(amount);
   await setDoc(doc(db, "rechargeRequests", requestId), {
     userId: currentUser.uid,
     email: currentUser.email,
@@ -1831,6 +1907,18 @@ async function reviewRechargeRequest(requestId, approved, reviewInfo = {}) {
   const request = rechargeRequestsCache.find((item) => item.id === requestId);
   if (!request) throw new Error("找不到充值申请");
   if (request.status !== "pending") throw new Error("该申请已处理");
+
+  if (usesSecureMoneyFunctions()) {
+    await callMoneyFunction("reviewRechargeRequest", {
+      requestId,
+      approved,
+      paymentReference: reviewInfo.paymentReference || "",
+      reviewNote: reviewInfo.reviewNote || ""
+    });
+    await Promise.all([loadRechargeRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
+    loadAdminTransactions().catch(() => {});
+    return;
+  }
 
   await runTransaction(db, async (transaction) => {
     const requestRef = doc(db, "rechargeRequests", requestId);
@@ -1906,7 +1994,7 @@ function renderWithdrawalRequests(requests = []) {
     return;
   }
 
-  body.innerHTML = requests
+  body.innerHTML = sanitizeHtml(requests
     .map(
       (request) => `
         <tr>
@@ -1925,7 +2013,7 @@ function renderWithdrawalRequests(requests = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadWithdrawalRequests() {
@@ -1945,6 +2033,15 @@ async function submitWithdrawalRequest(amount, bankAccount) {
   if (amount > walletBalance) throw new Error("钱包余额不足，无法提交提现申请");
 
   const requestId = `${currentUser.uid}-${Date.now()}`;
+  if (usesSecureMoneyFunctions()) {
+    const result = await callMoneyFunction("submitWithdrawalRequest", {
+      amount: Math.round(amount),
+      bankAccount,
+      externalRequestId: requestId
+    });
+    return result.id;
+  }
+
   const requestRef = doc(db, "withdrawRequests", requestId);
   const userWalletRef = walletRef();
   const requestData = {
@@ -1987,6 +2084,18 @@ async function reviewWithdrawalRequest(requestId, approved, reviewInfo = {}) {
   const request = withdrawalRequestsCache.find((item) => item.id === requestId);
   if (!request) throw new Error("找不到提现申请");
   if (request.status !== "pending") throw new Error("该申请已处理");
+
+  if (usesSecureMoneyFunctions()) {
+    await callMoneyFunction("reviewWithdrawalRequest", {
+      requestId,
+      approved,
+      payoutReference: reviewInfo.payoutReference || "",
+      reviewNote: reviewInfo.reviewNote || ""
+    });
+    await Promise.all([loadWithdrawalRequests(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
+    loadAdminTransactions().catch(() => {});
+    return;
+  }
 
   await runTransaction(db, async (transaction) => {
     const requestRef = doc(db, "withdrawRequests", requestId);
@@ -2064,7 +2173,7 @@ function renderRefundRequests(requests = []) {
     return;
   }
 
-  body.innerHTML = requests
+  body.innerHTML = sanitizeHtml(requests
     .map(
       (request) => `
         <tr>
@@ -2084,7 +2193,7 @@ function renderRefundRequests(requests = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadRefundRequests() {
@@ -2103,6 +2212,11 @@ async function submitRefundRequest(order) {
   if (!order?.id) throw new Error("找不到订单");
   if (!order.customerId) throw new Error("旧订单缺少用户ID，无法自动退款，请用新订单测试");
   if ((order.status || "approved") !== "approved") throw new Error("该订单当前不能申请退款");
+
+  if (usesSecureMoneyFunctions()) {
+    const result = await callMoneyFunction("submitMerchantRefund", { orderId: order.id });
+    return result.id;
+  }
 
   const requestId = `${currentMerchant.id}-${order.id}`;
   await runTransaction(db, async (transaction) => {
@@ -2155,6 +2269,13 @@ async function reviewRefundRequest(requestId, approved) {
   const request = refundRequestsCache.find((item) => item.id === requestId);
   if (!request) throw new Error("找不到退款申请");
   if (request.status !== "pending") throw new Error("该退款申请已处理");
+
+  if (usesSecureMoneyFunctions()) {
+    await callMoneyFunction("reviewMerchantRefund", { requestId, approved });
+    await Promise.all([loadRefundRequests(), loadMerchants(), loadAdminUsers(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
+    loadAdminTransactions().catch(() => {});
+    return;
+  }
 
   await runTransaction(db, async (transaction) => {
     const requestRef = doc(db, "refundRequests", requestId);
@@ -2271,7 +2392,7 @@ function renderSettlementRequests(requests = []) {
     return;
   }
 
-  body.innerHTML = requests
+  body.innerHTML = sanitizeHtml(requests
     .map(
       (request) => `
         <tr>
@@ -2291,7 +2412,7 @@ function renderSettlementRequests(requests = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadSettlementRequests() {
@@ -2326,6 +2447,14 @@ async function submitSettlementRequest(amount) {
   if (!amount || amount <= 0) throw new Error("当前没有可结算积分");
 
   const requestId = `S${Date.now()}`;
+  if (usesSecureMoneyFunctions()) {
+    const result = await callMoneyFunction("submitMerchantSettlement", {
+      amount: Math.round(amount),
+      externalRequestId: requestId
+    });
+    return result.id;
+  }
+
   await runTransaction(db, async (transaction) => {
     const merchantDocRef = merchantRef();
     const requestRef = doc(db, "settlementRequests", requestId);
@@ -2375,6 +2504,18 @@ async function reviewSettlementRequest(requestId, approved, reviewInfo = {}) {
   const request = settlementRequestsCache.find((item) => item.id === requestId);
   if (!request) throw new Error("找不到结算申请");
   if (request.status !== "pending") throw new Error("该结算申请已处理");
+
+  if (usesSecureMoneyFunctions()) {
+    await callMoneyFunction("reviewMerchantSettlement", {
+      requestId,
+      approved,
+      payoutReference: reviewInfo.payoutReference || "",
+      reviewNote: reviewInfo.reviewNote || ""
+    });
+    await Promise.all([loadSettlementRequests(), loadMerchants(), loadFinanceReport(), loadRiskCenter(), loadAdminOverview()]);
+    loadAdminTransactions().catch(() => {});
+    return;
+  }
 
   await runTransaction(db, async (transaction) => {
     const requestRef = doc(db, "settlementRequests", requestId);
@@ -2478,7 +2619,7 @@ function renderKycRequests(requests = []) {
     return;
   }
 
-  body.innerHTML = requests
+  body.innerHTML = sanitizeHtml(requests
     .map(
       (request) => `
         <tr>
@@ -2498,7 +2639,7 @@ function renderKycRequests(requests = []) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadKycRequests() {
@@ -2744,7 +2885,7 @@ function renderFinanceReport(rows = [], metrics = {}) {
     return;
   }
 
-  body.innerHTML = rows
+  body.innerHTML = sanitizeHtml(rows
     .map(
       (row) => `
         <tr>
@@ -2756,7 +2897,7 @@ function renderFinanceReport(rows = [], metrics = {}) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadFinanceReport() {
@@ -2859,7 +3000,7 @@ function renderRiskAlerts(alerts = riskAlertsCache) {
     return;
   }
 
-  body.innerHTML = visibleAlerts
+  body.innerHTML = sanitizeHtml(visibleAlerts
     .slice(0, 80)
     .map(
       (alert) => `
@@ -2886,7 +3027,7 @@ function renderRiskAlerts(alerts = riskAlertsCache) {
         </tr>
       `
     )
-    .join("");
+    .join(""));
 }
 
 async function loadRiskCenter() {
@@ -3063,7 +3204,7 @@ function renderAdminTransactions(filter = adminTransactionFilter) {
     return;
   }
 
-  body.innerHTML = rows
+  body.innerHTML = sanitizeHtml(rows
     .slice(0, 80)
     .map(
       (raw) => {
@@ -3081,7 +3222,7 @@ function renderAdminTransactions(filter = adminTransactionFilter) {
         `;
       }
     )
-    .join("");
+    .join(""));
 }
 
 async function loadAdminTransactions() {
@@ -3537,7 +3678,7 @@ function ensureOverlay() {
 function openDialog(title, body, confirmText = "确认", onConfirm = closeDialog) {
   const overlay = ensureOverlay();
   overlay.querySelector("#dialog-title").textContent = title;
-  overlay.querySelector("#dialog-body").innerHTML = body;
+  overlay.querySelector("#dialog-body").innerHTML = sanitizeHtml(body);
   const confirm = overlay.querySelector(".dialog-confirm");
   confirm.textContent = confirmText;
   confirm.onclick = () => onConfirm();
@@ -3645,13 +3786,43 @@ function fillPaymentForm(payment) {
   if (codeInput) codeInput.dataset.kind = payment.kind || "";
   if (codeInput) codeInput.dataset.recipientUserId = payment.recipientUserId || "";
   if (codeInput) codeInput.dataset.merchantId = payment.merchantId || "";
+  if (codeInput) codeInput.dataset.intentId = payment.intentId || "";
   if (result) {
     if (payment.kind === "disabled-receive" || payment.kind === "receive") {
       result.textContent = "个人扫码转账功能已停用，请扫描商家付款码";
+    } else if (payment.kind === "pos-intent") {
+      result.textContent = "已识别简单POS付款码，正在读取固定金额...";
+      loadPosPaymentIntent(payment.intentId).catch((error) => {
+        result.textContent = `读取 POS 付款资料失败：${error.message || "请稍后重试"}`;
+      });
     } else {
       result.textContent = `已识别商家付款码：${payment.merchant}${payment.amount ? `，${formatMoney(payment.amount)}` : ""}`;
     }
   }
+}
+
+async function loadPosPaymentIntent(intentId) {
+  const intent = await callMoneyFunction("getPosPaymentIntent", { intentId });
+  const codeInput = document.querySelector("#pay-code");
+  const merchantInput = document.querySelector("#pay-merchant");
+  const amountInput = document.querySelector("#pay-amount");
+  const result = document.querySelector("#scan-result");
+  if (codeInput) {
+    codeInput.dataset.kind = "pos-intent";
+    codeInput.dataset.intentId = intent.id;
+  }
+  if (merchantInput) {
+    merchantInput.value = intent.branchName || "简单POS";
+    merchantInput.readOnly = true;
+  }
+  if (amountInput) {
+    amountInput.value = String(intent.amountPoints || "");
+    amountInput.readOnly = true;
+  }
+  if (result) {
+    result.textContent = `POS 订单 ${intent.posOrderId}，应付 ${formatMoney(intent.amountPoints)}（RM ${Number(intent.amountMyr || 0).toFixed(2)}）`;
+  }
+  return intent;
 }
 
 async function startScanner() {
@@ -3790,9 +3961,33 @@ async function confirmScanPayment() {
   const payableAmount = Math.max(0, Number(amount || 0) - couponDiscount);
   const recipientUserId = codeInput?.dataset.recipientUserId;
   const kind = codeInput?.dataset.kind;
+  const intentId = codeInput?.dataset.intentId;
 
   if (kind === "disabled-receive" || kind === "receive") {
     showToast("用户扫码转账功能已停用，请扫描商家付款码");
+    return;
+  }
+
+  if (kind === "pos-intent" && intentId) {
+    try {
+      const intent = await loadPosPaymentIntent(intentId);
+      if (intent.status === "completed") {
+        showToast("这笔 POS 付款已经完成");
+        return;
+      }
+      if (Number(intent.amountPoints || 0) > walletBalance) {
+        showToast("钱包余额不足");
+        return;
+      }
+      if (!window.confirm(`确认支付 ${formatMoney(intent.amountPoints)} 给 ${intent.branchName || "简单POS"}？`)) {
+        return;
+      }
+      const paid = await callMoneyFunction("authorizePosPaymentIntent", { intentId });
+      closeDialog();
+      showToast(`付款成功，参考号 ${paid.paymentReference}`);
+    } catch (error) {
+      showToast(error.message || "POS 付款失败");
+    }
     return;
   }
 
